@@ -1,35 +1,35 @@
-"""Crea (o promueve) la cuenta docente. Uso: python -m app.seed"""
+"""Crea la cuenta admin (una sola, dueña del panel /admin/teachers). Uso: python -m app.seed
+
+No toca el rol si la cuenta ya existe: tras la migración a grupos (ver
+migrate_groups.py) esta cuenta pasa a role="admin" y debe quedarse así en
+cada reinicio, no volver a "teacher"."""
 from .database import SessionLocal, engine, Base
 from . import models
 from .security import hash_password
 
-TEACHER_EMAIL = "wagonzalezm@unal.edu.co"
-TEACHER_DOCUMENTO = "1038359871"
-TEACHER_NAME = "Wilmar A. Gonzalez M."
+ADMIN_EMAIL = "wagonzalezm@unal.edu.co"
+ADMIN_DOCUMENTO = "1038359871"
+ADMIN_NAME = "Wilmar A. Gonzalez M."
 
 
 def seed():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        student = db.query(models.Student).filter_by(email=TEACHER_EMAIL).first()
+        student = db.query(models.Student).filter_by(email=ADMIN_EMAIL).first()
         if not student:
             student = models.Student(
-                email=TEACHER_EMAIL,
-                documento=TEACHER_DOCUMENTO,
-                hashed_password=hash_password(TEACHER_DOCUMENTO),
-                full_name=TEACHER_NAME,
-                role="teacher",
+                email=ADMIN_EMAIL,
+                documento=ADMIN_DOCUMENTO,
+                hashed_password=hash_password(ADMIN_DOCUMENTO),
+                full_name=ADMIN_NAME,
+                role="admin",
             )
             db.add(student)
             db.commit()
-            print("Docente creado:", student.email)
-        elif student.role != "teacher":
-            student.role = "teacher"
-            db.commit()
-            print("Docente actualizado (rol=teacher):", student.email)
+            print("Admin creado:", student.email)
         else:
-            print("Docente ya existía:", student.email)
+            print(f"Cuenta ya existía (rol={student.role}):", student.email)
     finally:
         db.close()
 

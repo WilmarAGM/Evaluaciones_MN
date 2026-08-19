@@ -11,6 +11,8 @@ import TeacherExamDashboard from "./pages/TeacherExamDashboard";
 import TeacherExamPreview from "./pages/TeacherExamPreview";
 import TeacherBanks from "./pages/TeacherBanks";
 import TeacherProblemDetail from "./pages/TeacherProblemDetail";
+import TeacherStudents from "./pages/TeacherStudents";
+import AdminTeachers from "./pages/AdminTeachers";
 
 function PrivateRoute({ children }) {
   const { user } = useAuth();
@@ -21,6 +23,13 @@ function TeacherRoute({ children }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/" replace />;
   if (user.role !== "teacher") return <Navigate to="/exams" replace />;
+  return children;
+}
+
+function AdminRoute({ children }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/" replace />;
+  if (user.role !== "admin") return <Navigate to="/exams" replace />;
   return children;
 }
 
@@ -101,6 +110,22 @@ export default function App() {
               <TeacherRoute>
                 <TeacherProblemDetail />
               </TeacherRoute>
+            }
+          />
+          <Route
+            path="/teacher/students"
+            element={
+              <TeacherRoute>
+                <TeacherStudents />
+              </TeacherRoute>
+            }
+          />
+          <Route
+            path="/admin/teachers"
+            element={
+              <AdminRoute>
+                <AdminTeachers />
+              </AdminRoute>
             }
           />
         </Routes>

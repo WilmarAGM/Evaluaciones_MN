@@ -9,7 +9,7 @@ from fastapi import FastAPI, Depends, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
@@ -17,12 +17,14 @@ from . import models, schemas, executor
 from .database import get_db, Base, engine
 from .gemini_agents import orchestrate_load_tex
 from .gemini_quota import QuotaExceededError, get_usage_today
+from .import_students import _normalize_name
 from .security import (
     verify_password,
     hash_password,
     create_access_token,
     get_current_student,
     get_current_teacher,
+    get_current_admin,
 )
 
 ALLOWED_EMAIL_DOMAIN = "@unal.edu.co"
@@ -113,6 +115,21 @@ def get_problem_or_404(db: Session, problem_id: int) -> models.Problem:
     return problem
 
 
+def get_teacher_problem_or_404(db: Session, problem_id: int, group: int) -> models.Problem:
+    """Como get_problem_or_404, pero exige que el problema pertenezca a un
+    banco del grupo del docente (Problem no tiene columna group propia,
+    hereda el aislamiento vía su banco)."""
+    problem = (
+        db.query(models.Problem)
+        .join(models.ProblemBank, models.Problem.bank_id == models.ProblemBank.id)
+        .filter(models.Problem.id == problem_id, models.ProblemBank.group == group)
+        .first()
+    )
+    if not problem:
+        raise HTTPException(status_code=404, detail="Problema no encontrado")
+    return problem
+
+
 def get_problem_usage_blockers(db: Session, problem_id: int) -> list[str]:
     """Razones por las que este problema NO se puede borrar sin riesgo de
     romper un examen existente o perder datos de estudiantes. Lista vacía =
@@ -140,15 +157,21 @@ def get_problem_usage_blockers(db: Session, problem_id: int) -> list[str]:
     return blockers
 
 
-def get_bank_or_404(db: Session, bank_id: int) -> models.ProblemBank:
-    bank = db.query(models.ProblemBank).filter(models.ProblemBank.id == bank_id).first()
+def get_bank_or_404(db: Session, bank_id: int, group: int | None = None) -> models.ProblemBank:
+    q = db.query(models.ProblemBank).filter(models.ProblemBank.id == bank_id)
+    if group is not None:
+        q = q.filter(models.ProblemBank.group == group)
+    bank = q.first()
     if not bank:
         raise HTTPException(status_code=404, detail="Banco no encontrado")
     return bank
 
 
-def get_exam_or_404(db: Session, exam_id: int) -> models.Exam:
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+def get_exam_or_404(db: Session, exam_id: int, group: int | None = None) -> models.Exam:
+    q = db.query(models.Exam).filter(models.Exam.id == exam_id)
+    if group is not None:
+        q = q.filter(models.Exam.group == group)
+    exam = q.first()
     if not exam:
         raise HTTPException(status_code=404, detail="Examen no encontrado")
     return exam
@@ -172,13 +195,13 @@ def get_exam_for_student_problem(db: Session, student: models.Student, problem: 
         .first()
     )
     if assigned:
-        return get_exam_or_404(db, assigned.attempt.exam_id)
+        return get_exam_or_404(db, assigned.attempt.exam_id, group=student.group)
 
     exam_ids = [ep.exam_id for ep in problem.exam_problems]
     if not exam_ids:
         raise HTTPException(status_code=404, detail="Este problema no está asignado a ningún examen")
     if len(exam_ids) == 1:
-        return get_exam_or_404(db, exam_ids[0])
+        return get_exam_or_404(db, exam_ids[0], group=student.group)
 
     attempt = (
         db.query(models.ExamAttempt)
@@ -186,7 +209,7 @@ def get_exam_for_student_problem(db: Session, student: models.Student, problem: 
         .first()
     )
     if attempt:
-        return get_exam_or_404(db, attempt.exam_id)
+        return get_exam_or_404(db, attempt.exam_id, group=student.group)
     raise HTTPException(
         status_code=409,
         detail="Este problema pertenece a varios exámenes y no tienes un intento activo en ninguno.",
@@ -201,7 +224,7 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": student.email})
     return schemas.TokenResponse(
-        access_token=token, full_name=student.full_name, email=student.email, role=student.role
+        access_token=token, full_name=student.full_name, email=student.email, role=student.role, group=student.group
     )
 
 
@@ -227,6 +250,7 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
         hashed_password=hash_password(documento),
         full_name=payload.full_name.strip() if payload.full_name else None,
         role="student",
+        group=payload.group,
     )
     db.add(student)
     db.commit()
@@ -234,8 +258,21 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": student.email})
     return schemas.TokenResponse(
-        access_token=token, full_name=student.full_name, email=student.email, role=student.role
+        access_token=token, full_name=student.full_name, email=student.email, role=student.role, group=student.group
     )
+
+
+@app.post("/api/auth/change-password")
+def change_password(
+    payload: schemas.ChangePasswordIn,
+    db: Session = Depends(get_db),
+    current: models.Student = Depends(get_current_student),
+):
+    if not verify_password(payload.current_password, current.hashed_password):
+        raise HTTPException(status_code=401, detail="La contraseña actual no es correcta")
+    current.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return {"changed": True}
 
 
 def peek_attempt(db: Session, student: models.Student, exam: models.Exam):
@@ -268,7 +305,7 @@ def student_problem_result(db: Session, student: models.Student, problem: models
 
 @app.get("/api/exams", response_model=list[schemas.ExamListOut])
 def list_exams(db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exams = db.query(models.Exam).all()
+    exams = db.query(models.Exam).filter(models.Exam.group == student.group).all()
     results = []
     for exam in exams:
         attempt = peek_attempt(db, student, exam)
@@ -353,15 +390,13 @@ def build_exam_out(exam: models.Exam, problems: list[models.Problem]) -> schemas
 
 @app.get("/api/exams/{exam_id}", response_model=schemas.ExamOut)
 def get_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=student.group)
     return build_exam_out(exam, resolve_exam_problems(db, student, exam))
 
 
 @app.post("/api/exams/{exam_id}/start", response_model=schemas.AttemptOut)
 def start_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Examen no encontrado")
+    exam = get_exam_or_404(db, exam_id, group=student.group)
     if not exam.is_open and peek_attempt(db, student, exam) is None:
         raise HTTPException(status_code=403, detail="El docente aún no ha habilitado este examen.")
     attempt = get_or_create_attempt(db, student, exam)
@@ -370,9 +405,7 @@ def start_exam(exam_id: int, db: Session = Depends(get_db), student: models.Stud
 
 @app.post("/api/exams/{exam_id}/finish", response_model=schemas.AttemptOut)
 def finish_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Examen no encontrado")
+    exam = get_exam_or_404(db, exam_id, group=student.group)
     attempt = get_or_create_attempt(db, student, exam)
     if attempt.finished_at is None:
         attempt.finished_at = now()
@@ -383,9 +416,7 @@ def finish_exam(exam_id: int, db: Session = Depends(get_db), student: models.Stu
 
 @app.get("/api/exams/{exam_id}/results", response_model=schemas.ExamResultsOut)
 def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Examen no encontrado")
+    exam = get_exam_or_404(db, exam_id, group=student.group)
     attempt = get_or_create_attempt(db, student, exam)
     status = attempt_status(attempt, db)
     if not status["finished"]:
@@ -592,7 +623,7 @@ def teacher_preview_exam(
     """Vista previa del examen para el docente: mismos problemas que ve el
     estudiante, pero sin crear un ExamAttempt (sin cronómetro ni límite de
     intentos) — para resolverlo y validar las respuestas antes de publicarlo."""
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
     return build_exam_out(exam, resolve_exam_problems(db, teacher, exam))
 
 
@@ -603,7 +634,7 @@ def teacher_run_code(
     db: Session = Depends(get_db),
     teacher: models.Student = Depends(get_current_teacher),
 ):
-    problem = get_problem_or_404(db, problem_id)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     result = run_problem_code(payload.code, problem)
     grading = executor.grade_submission(result, problem)
     return schemas.RunResult(
@@ -626,7 +657,7 @@ def teacher_save_code(
     """Guarda el intento de solución del docente en su propia cuenta (no
     cuenta como Submission de un estudiante: el dashboard filtra por
     role == 'student'), para que pueda retomar la previsualización después."""
-    problem = get_problem_or_404(db, problem_id)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     result = run_problem_code(payload.code, problem)
     grading = executor.grade_submission(result, problem)
 
@@ -669,7 +700,7 @@ def _slot_representative_problem(slot: models.ExamSlot) -> models.Problem | None
 def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExamDashboardOut:
     students = (
         db.query(models.Student)
-        .filter(models.Student.role == "student")
+        .filter(models.Student.role == "student", models.Student.group == exam.group)
         .order_by(models.Student.full_name)
         .all()
     )
@@ -828,7 +859,7 @@ def _to_teacher_list_out(db: Session, exam: models.Exam) -> schemas.TeacherExamL
 
 @app.get("/api/teacher/exams", response_model=list[schemas.TeacherExamListOut])
 def teacher_list_exams(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
-    exams = db.query(models.Exam).all()
+    exams = db.query(models.Exam).filter(models.Exam.group == teacher.group).all()
     return [_to_teacher_list_out(db, exam) for exam in exams]
 
 
@@ -843,7 +874,7 @@ def teacher_list_banks(
     ?published_only=true (usado al armar un examen) solo devuelve los
     publicados, para que un borrador sin revisar no pueda terminar en un
     examen real."""
-    banks = db.query(models.ProblemBank).all()
+    banks = db.query(models.ProblemBank).filter(models.ProblemBank.group == teacher.group).all()
     return [
         schemas.BankOut(
             id=bank.id,
@@ -865,7 +896,7 @@ def teacher_list_banks(
 def teacher_get_problem_detail(
     problem_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
-    problem = get_problem_or_404(db, problem_id)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     return schemas.TeacherProblemDetailOut(
         id=problem.id,
         bank_id=problem.bank_id,
@@ -887,7 +918,7 @@ def teacher_publish_problem(
 ):
     """Marca un problema borrador (generado por el pipeline de agentes IA o
     creado a mano) como publicado, habilitándolo para usarse en exámenes."""
-    problem = get_problem_or_404(db, problem_id)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     problem.status = "published"
     db.commit()
     return schemas.BankProblemOut(
@@ -908,7 +939,7 @@ def teacher_delete_problem(
     guardadas), para no romper exámenes existentes ni perder datos de
     estudiantes. Para quitar un problema que sí está en uso, primero hay que
     eliminar el examen que lo usa (ver DELETE /api/teacher/exams/{id})."""
-    problem = get_problem_or_404(db, problem_id)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     blockers = get_problem_usage_blockers(db, problem_id)
     if blockers:
         raise HTTPException(
@@ -928,7 +959,7 @@ def teacher_delete_bank(
     usa como fuente de sorteo en algún examen, o si alguno de sus problemas
     está en uso (ver teacher_delete_problem) — hay que resolver eso primero
     (normalmente eliminando el examen que lo usa)."""
-    bank = get_bank_or_404(db, bank_id)
+    bank = get_bank_or_404(db, bank_id, group=teacher.group)
 
     blockers = []
     slots_using_bank = db.query(models.ExamSlot).filter(models.ExamSlot.bank_id == bank_id).all()
@@ -963,7 +994,7 @@ def teacher_create_bank(
     if not title:
         raise HTTPException(status_code=400, detail="El banco necesita un título.")
 
-    bank = models.ProblemBank(title=title, description=payload.description)
+    bank = models.ProblemBank(title=title, description=payload.description, group=teacher.group)
     db.add(bank)
     db.commit()
     db.refresh(bank)
@@ -984,7 +1015,7 @@ def teacher_load_bank_from_tex(
     gemini_agents.orchestrate_load_tex) — nunca se usa en un examen hasta
     que el docente lo publique. Llamada síncrona: puede tardar varios
     minutos si hay varios problemas en el .tex."""
-    get_bank_or_404(db, bank_id)
+    get_bank_or_404(db, bank_id, group=teacher.group)
 
     if not file.filename.lower().endswith(".tex"):
         raise HTTPException(status_code=400, detail="El archivo debe ser un .tex")
@@ -1028,15 +1059,14 @@ def teacher_create_exam(
         description=payload.description,
         duration_minutes=payload.duration_minutes,
         is_open=False,
+        group=teacher.group,
     )
     db.add(exam)
     db.flush()
 
     for order, slot_in in enumerate(payload.slots):
         if slot_in.kind == "fixed":
-            problem = db.query(models.Problem).filter(models.Problem.id == slot_in.problem_id).first()
-            if not problem:
-                raise HTTPException(status_code=404, detail=f"Problema {slot_in.problem_id} no encontrado")
+            problem = get_teacher_problem_or_404(db, slot_in.problem_id, teacher.group)
             if problem.status != "published":
                 raise HTTPException(
                     status_code=400,
@@ -1044,9 +1074,7 @@ def teacher_create_exam(
                 )
             db.add(models.ExamSlot(exam_id=exam.id, order=order, kind="fixed", problem_id=problem.id))
         elif slot_in.kind == "random":
-            bank = db.query(models.ProblemBank).filter(models.ProblemBank.id == slot_in.bank_id).first()
-            if not bank:
-                raise HTTPException(status_code=404, detail=f"Banco {slot_in.bank_id} no encontrado")
+            bank = get_bank_or_404(db, slot_in.bank_id, group=teacher.group)
             published = [p for p in bank.problems if p.status == "published"]
             count = max(1, slot_in.count or 1)
             if count > len(published):
@@ -1070,7 +1098,7 @@ def teacher_toggle_exam_open(
     """Habilita/deshabilita el acceso de los estudiantes al examen. Cerrarlo
     no afecta a quienes ya tienen un intento en curso — solo bloquea intentos
     nuevos (ver start_exam)."""
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
     exam.is_open = not exam.is_open
     db.commit()
     return schemas.TeacherToggleOpenOut(exam_id=exam.id, is_open=exam.is_open)
@@ -1085,7 +1113,7 @@ def teacher_delete_exam(
     incluso si algún problema también aparece en otro examen (banco
     compartido) — en ese caso el trabajo guardado en ese otro examen también
     se pierde. Esta es una acción destructiva e irreversible."""
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
 
     problem_ids = {ep.problem_id for ep in exam.exam_problems}
     for slot in exam.slots:
@@ -1123,10 +1151,14 @@ def teacher_student_submissions(
     db: Session = Depends(get_db),
     teacher: models.Student = Depends(get_current_teacher),
 ):
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
     student = (
         db.query(models.Student)
-        .filter(models.Student.id == student_id, models.Student.role == "student")
+        .filter(
+            models.Student.id == student_id,
+            models.Student.role == "student",
+            models.Student.group == teacher.group,
+        )
         .first()
     )
     if not student:
@@ -1164,7 +1196,7 @@ def teacher_student_submissions(
 def teacher_exam_dashboard(
     exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
     return compute_exam_dashboard(db, exam)
 
 
@@ -1172,7 +1204,7 @@ def teacher_exam_dashboard(
 def teacher_export_xlsx(
     exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
-    exam = get_exam_or_404(db, exam_id)
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
     dashboard = compute_exam_dashboard(db, exam)
 
     wb = Workbook()
@@ -1216,6 +1248,270 @@ def teacher_export_xlsx(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---- Vistas de admin (gestión de cuentas docente, una por grupo) ----
+
+DEFAULT_TEACHER_PASSWORD = "123456789"
+
+
+@app.get("/api/admin/teachers", response_model=list[schemas.AdminTeacherOut])
+def admin_list_teachers(db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)):
+    return (
+        db.query(models.Student)
+        .filter(models.Student.role == "teacher")
+        .order_by(models.Student.group)
+        .all()
+    )
+
+
+@app.post("/api/admin/teachers", response_model=schemas.AdminTeacherOut)
+def admin_create_teacher(
+    payload: schemas.AdminTeacherIn,
+    db: Session = Depends(get_db),
+    admin: models.Student = Depends(get_current_admin),
+):
+    """Crea una cuenta docente para un grupo. La contraseña inicial siempre es
+    DEFAULT_TEACHER_PASSWORD — el docente la cambia con POST
+    /api/auth/change-password la primera vez que entra. No exige correo
+    institucional: estas cuentas no pasan por el auto-registro público."""
+    email = payload.email.strip().lower()
+    existing = db.query(models.Student).filter(models.Student.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Ya existe una cuenta registrada con ese correo")
+
+    teacher = models.Student(
+        email=email,
+        documento="-",
+        hashed_password=hash_password(DEFAULT_TEACHER_PASSWORD),
+        full_name=payload.full_name.strip(),
+        role="teacher",
+        group=payload.group,
+    )
+    db.add(teacher)
+    db.commit()
+    db.refresh(teacher)
+    return teacher
+
+
+@app.delete("/api/admin/teachers/{teacher_id}")
+def admin_delete_teacher(
+    teacher_id: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    teacher = (
+        db.query(models.Student)
+        .filter(models.Student.id == teacher_id, models.Student.role == "teacher")
+        .first()
+    )
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    db.delete(teacher)
+    db.commit()
+    return {"deleted": True, "teacher_id": teacher_id}
+
+
+# ---- Roster de estudiantes del grupo (docente) ----
+
+
+@app.get("/api/teacher/students", response_model=list[schemas.StudentRosterOut])
+def teacher_list_students(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
+    return (
+        db.query(models.Student)
+        .filter(models.Student.role == "student", models.Student.group == teacher.group)
+        .order_by(models.Student.full_name)
+        .all()
+    )
+
+
+@app.post("/api/teacher/students", response_model=schemas.StudentRosterOut)
+def teacher_add_student(
+    payload: schemas.AddStudentIn,
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    email = payload.email.strip().lower()
+    documento = payload.documento.strip()
+    if not documento:
+        raise HTTPException(status_code=400, detail="El documento de identidad es obligatorio")
+    if db.query(models.Student).filter(models.Student.email == email).first():
+        raise HTTPException(status_code=409, detail="Ya existe una cuenta registrada con ese correo")
+
+    student = models.Student(
+        email=email,
+        documento=documento,
+        hashed_password=hash_password(documento),
+        full_name=_normalize_name(payload.full_name),
+        role="student",
+        group=teacher.group,
+    )
+    db.add(student)
+    db.commit()
+    db.refresh(student)
+    return student
+
+
+@app.delete("/api/teacher/students/{student_id}")
+def teacher_delete_student(
+    student_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    student = (
+        db.query(models.Student)
+        .filter(
+            models.Student.id == student_id,
+            models.Student.role == "student",
+            models.Student.group == teacher.group,
+        )
+        .first()
+    )
+    if not student:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+
+    db.query(models.Submission).filter(models.Submission.student_id == student.id).delete(synchronize_session=False)
+    attempt_ids = [
+        row.id for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.student_id == student.id).all()
+    ]
+    if attempt_ids:
+        db.query(models.AttemptProblem).filter(models.AttemptProblem.attempt_id.in_(attempt_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id == student.id).delete(
+        synchronize_session=False
+    )
+    db.delete(student)
+    db.commit()
+    return {"deleted": True, "student_id": student_id}
+
+
+@app.delete("/api/teacher/students")
+def teacher_delete_group(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
+    """Elimina TODO el roster del grupo del docente (y sus intentos/entregas).
+    Acción destructiva e irreversible — pensada para arrancar un semestre
+    nuevo desde cero."""
+    student_ids = [
+        row.id
+        for row in db.query(models.Student.id)
+        .filter(models.Student.role == "student", models.Student.group == teacher.group)
+        .all()
+    ]
+    if student_ids:
+        db.query(models.Submission).filter(models.Submission.student_id.in_(student_ids)).delete(
+            synchronize_session=False
+        )
+        attempt_ids = [
+            row.id
+            for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.student_id.in_(student_ids)).all()
+        ]
+        if attempt_ids:
+            db.query(models.AttemptProblem).filter(models.AttemptProblem.attempt_id.in_(attempt_ids)).delete(
+                synchronize_session=False
+            )
+        db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id.in_(student_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"deleted": True, "count": len(student_ids)}
+
+
+ROSTER_COLUMNS = {
+    "nombres y apellidos": "full_name",
+    "documento": "documento",
+    "correo": "email",
+    "grupo": "group",
+}
+
+
+@app.post("/api/teacher/students/import-xlsx", response_model=schemas.ImportRosterResultOut)
+def teacher_import_students_xlsx(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Carga masiva del roster desde un .xlsx con columnas obligatorias
+    (por nombre de encabezado, sin importar mayúsculas): Nombres y Apellidos,
+    Documento, Correo, Grupo. Filas cuyo Grupo no coincida con el del docente
+    que sube el archivo se rechazan (se reportan, no se importan); el resto
+    se crea con el mismo convenio de import_students.py (password=documento,
+    dedup por email)."""
+    if not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .xlsx")
+
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="No se pudo leer el archivo .xlsx")
+    ws = wb.active
+
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if not header_row:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+    col_index = {}
+    for i, cell in enumerate(header_row):
+        key = str(cell or "").strip().lower()
+        if key in ROSTER_COLUMNS:
+            col_index[ROSTER_COLUMNS[key]] = i
+
+    missing = [h for h in ("full_name", "documento", "email", "group") if h not in col_index]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Faltan columnas obligatorias: Nombres y Apellidos, Documento, Correo, Grupo.",
+        )
+
+    created, skipped, rejected = 0, 0, []
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if row is None or all(c is None for c in row):
+            continue
+
+        raw_group = row[col_index["group"]]
+        try:
+            row_group = int(raw_group)
+        except (TypeError, ValueError):
+            rejected.append(schemas.RosterRejectedRowOut(row=row_idx, motivo="Grupo inválido"))
+            continue
+        if row_group != teacher.group:
+            rejected.append(
+                schemas.RosterRejectedRowOut(
+                    row=row_idx, motivo=f"Grupo {row_group} no coincide con tu grupo ({teacher.group})"
+                )
+            )
+            continue
+
+        raw_email = row[col_index["email"]]
+        email = str(raw_email or "").strip().lower()
+        if not email:
+            rejected.append(schemas.RosterRejectedRowOut(row=row_idx, motivo="Correo vacío"))
+            continue
+
+        raw_documento = row[col_index["documento"]]
+        if isinstance(raw_documento, float) and raw_documento.is_integer():
+            documento = str(int(raw_documento))
+        else:
+            documento = str(raw_documento or "").strip()
+        if not documento:
+            rejected.append(schemas.RosterRejectedRowOut(row=row_idx, motivo="Documento vacío"))
+            continue
+
+        if db.query(models.Student).filter(models.Student.email == email).first():
+            skipped += 1
+            continue
+
+        full_name = _normalize_name(str(row[col_index["full_name"]] or ""))
+        db.add(
+            models.Student(
+                email=email,
+                documento=documento,
+                hashed_password=hash_password(documento),
+                full_name=full_name,
+                role="student",
+                group=row_group,
+            )
+        )
+        created += 1
+
+    db.commit()
+    return schemas.ImportRosterResultOut(created=created, skipped=skipped, rejected=rejected)
 
 
 # ---- Frontend estático (solo presente en la imagen de Docker) ----

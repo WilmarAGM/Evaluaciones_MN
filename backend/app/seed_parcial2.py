@@ -671,6 +671,7 @@ def seed():
                 bank = models.ProblemBank(
                     title=bank_title,
                     description=f"Variantes de {bank_title} para Parcial Práctico Dos.",
+                    group=1,
                 )
                 db.add(bank)
                 db.commit()
@@ -699,6 +700,7 @@ def seed():
                 description="Parcial Práctico Dos — integrales impropias, P.V.I./P.V.F. y EDP parabólica.",
                 duration_minutes=50,
                 is_open=False,  # el docente lo habilita desde su dashboard a la hora de cada sesión
+                group=1,
             )
             db.add(exam)
             db.commit()

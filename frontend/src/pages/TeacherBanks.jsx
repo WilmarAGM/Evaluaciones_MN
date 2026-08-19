@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import * as api from "../api";
+import ChangePasswordForm from "../components/ChangePasswordForm";
 
 function BankTexUploader({ bank, onLoaded }) {
   const [file, setFile] = useState(null);
@@ -206,6 +207,13 @@ export default function TeacherBanks() {
             <span className="text-slate-400 text-sm hidden sm:block">
               {user?.full_name || user?.email}
             </span>
+            <Link
+              to="/teacher/students"
+              className="text-sm text-slate-300 hover:text-white border border-white/10 rounded-lg px-3 py-1.5 hover:bg-white/5 transition"
+            >
+              Estudiantes
+            </Link>
+            <ChangePasswordForm />
             <button
               onClick={() => {
                 signOut();

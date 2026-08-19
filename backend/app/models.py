@@ -25,7 +25,12 @@ class Student(Base):
     documento = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=True)
-    role = Column(String, default="student", nullable=False)  # "student" | "teacher"
+    role = Column(String, default="student", nullable=False)  # "student" | "teacher" | "admin"
+
+    # Sección del curso (1-4). Para un estudiante: su grupo. Para un docente:
+    # el grupo que dicta (aísla qué exámenes/bancos/estudiantes ve). None
+    # para "admin", que no dicta ningún grupo.
+    group = Column(Integer, nullable=True)
 
     submissions = relationship("Submission", back_populates="student")
 
@@ -38,6 +43,7 @@ class Exam(Base):
     description = Column(Text, nullable=True)
     duration_minutes = Column(Integer, default=50, nullable=True)  # None = sin límite de tiempo
     is_open = Column(Boolean, default=True, nullable=False)  # el docente habilita/deshabilita el acceso
+    group = Column(Integer, nullable=True)  # grupo dueño del examen (1-4)
 
     exam_problems = relationship(
         "ExamProblem", back_populates="exam", order_by="ExamProblem.order",
@@ -63,6 +69,7 @@ class ProblemBank(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
+    group = Column(Integer, nullable=True)  # grupo dueño del banco (1-4)
 
     problems = relationship("Problem", back_populates="bank")
 

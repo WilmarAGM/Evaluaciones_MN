@@ -6,6 +6,7 @@ export default function Register() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [documento, setDocumento] = useState("");
+  const [group, setGroup] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const { signUp } = useAuth();
@@ -19,10 +20,14 @@ export default function Register() {
       setError("Debes registrarte con un correo institucional @unal.edu.co");
       return;
     }
+    if (!group) {
+      setError("Debes indicar tu grupo");
+      return;
+    }
 
     setLoading(true);
     try {
-      const userInfo = await signUp(email, documento, fullName);
+      const userInfo = await signUp(email, documento, fullName, Number(group));
       navigate(userInfo.role === "teacher" ? "/teacher/exams" : "/exams");
     } catch (err) {
       setError(
@@ -79,9 +84,26 @@ export default function Register() {
             placeholder="Tu documento de identidad"
             className="w-full rounded-lg bg-black/30 border border-white/10 px-3.5 py-2.5 text-white placeholder-slate-500 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/30 transition mb-2"
           />
-          <p className="text-xs text-slate-500 mb-2">
+          <p className="text-xs text-slate-500 mb-4">
             Tu contraseña para iniciar sesión será tu número de documento.
           </p>
+
+          <label className="block text-sm text-slate-300 mb-1.5">Grupo</label>
+          <select
+            required
+            value={group}
+            onChange={(e) => setGroup(e.target.value)}
+            className="w-full rounded-lg bg-black/30 border border-white/10 px-3.5 py-2.5 text-white outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/30 transition mb-2"
+          >
+            <option value="" disabled>
+              Selecciona tu grupo
+            </option>
+            {[1, 2, 3, 4].map((g) => (
+              <option key={g} value={g}>
+                Grupo {g}
+              </option>
+            ))}
+          </select>
 
           {error && <p className="text-rose-400 text-sm mt-2 mb-1">{error}</p>}
 

@@ -20,11 +20,20 @@ export async function login(email, password) {
   return data;
 }
 
-export async function register(email, documento, fullName) {
+export async function register(email, documento, fullName, group) {
   const { data } = await client.post("/api/auth/register", {
     email,
     documento,
     full_name: fullName,
+    group,
+  });
+  return data;
+}
+
+export async function changePassword(currentPassword, newPassword) {
+  const { data } = await client.post("/api/auth/change-password", {
+    current_password: currentPassword,
+    new_password: newPassword,
   });
   return data;
 }
@@ -174,6 +183,62 @@ export async function downloadExamXlsx(examId, filename) {
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+// ---- Admin ----
+
+export async function getAdminTeachers() {
+  const { data } = await client.get("/api/admin/teachers");
+  return data;
+}
+
+export async function createAdminTeacher({ email, fullName, group }) {
+  const { data } = await client.post("/api/admin/teachers", {
+    email,
+    full_name: fullName,
+    group,
+  });
+  return data;
+}
+
+export async function deleteAdminTeacher(teacherId) {
+  const { data } = await client.delete(`/api/admin/teachers/${teacherId}`);
+  return data;
+}
+
+// ---- Roster de estudiantes (docente) ----
+
+export async function getTeacherStudents() {
+  const { data } = await client.get("/api/teacher/students");
+  return data;
+}
+
+export async function addTeacherStudent({ fullName, documento, email }) {
+  const { data } = await client.post("/api/teacher/students", {
+    full_name: fullName,
+    documento,
+    email,
+  });
+  return data;
+}
+
+export async function deleteTeacherStudent(studentId) {
+  const { data } = await client.delete(`/api/teacher/students/${studentId}`);
+  return data;
+}
+
+export async function deleteTeacherGroup() {
+  const { data } = await client.delete("/api/teacher/students");
+  return data;
+}
+
+export async function importStudentRoster(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await client.post("/api/teacher/students/import-xlsx", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
 }
 
 export default client;

@@ -60,3 +60,9 @@ def get_current_teacher(student: models.Student = Depends(get_current_student)) 
     if student.role != "teacher":
         raise HTTPException(status_code=403, detail="Acceso solo para docentes")
     return student
+
+
+def get_current_admin(student: models.Student = Depends(get_current_student)) -> models.Student:
+    if student.role != "admin":
+        raise HTTPException(status_code=403, detail="Acceso solo para administradores")
+    return student

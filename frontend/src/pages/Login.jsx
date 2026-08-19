@@ -16,7 +16,9 @@ export default function Login() {
     setLoading(true);
     try {
       const userInfo = await signIn(email, password);
-      navigate(userInfo.role === "teacher" ? "/teacher/exams" : "/exams");
+      if (userInfo.role === "admin") navigate("/admin/teachers");
+      else if (userInfo.role === "teacher") navigate("/teacher/exams");
+      else navigate("/exams");
     } catch (err) {
       setError(
         err.response?.data?.detail || "No se pudo iniciar sesión. Intenta de nuevo."

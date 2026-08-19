@@ -12,16 +12,16 @@ export function AuthProvider({ children }) {
   async function signIn(email, password) {
     const data = await api.login(email, password);
     localStorage.setItem("token", data.access_token);
-    const userInfo = { email: data.email, full_name: data.full_name, role: data.role };
+    const userInfo = { email: data.email, full_name: data.full_name, role: data.role, group: data.group };
     localStorage.setItem("user", JSON.stringify(userInfo));
     setUser(userInfo);
     return userInfo;
   }
 
-  async function signUp(email, documento, fullName) {
-    const data = await api.register(email, documento, fullName);
+  async function signUp(email, documento, fullName, group) {
+    const data = await api.register(email, documento, fullName, group);
     localStorage.setItem("token", data.access_token);
-    const userInfo = { email: data.email, full_name: data.full_name, role: data.role };
+    const userInfo = { email: data.email, full_name: data.full_name, role: data.role, group: data.group };
     localStorage.setItem("user", JSON.stringify(userInfo));
     setUser(userInfo);
     return userInfo;

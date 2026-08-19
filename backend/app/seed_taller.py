@@ -889,6 +889,7 @@ def seed():
             bank = models.ProblemBank(
                 title="Simulacro Parcial Final",
                 description="Problemas de Taller_final.pdf — integración, EDOs, PVF y PDEs.",
+                group=1,
             )
             db.add(bank)
             db.commit()
@@ -898,6 +899,7 @@ def seed():
             title="Simulacro Parcial Final",
             description="Simulacro basado en Taller_final.pdf — integración, EDOs, PVF y PDEs.",
             duration_minutes=None,  # sin límite de tiempo: el estudiante puede entrar y salir libremente
+            group=1,
         )
         db.add(exam)
         db.commit()

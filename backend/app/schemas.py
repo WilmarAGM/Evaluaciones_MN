@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -12,6 +12,7 @@ class RegisterRequest(BaseModel):
     email: str
     documento: str
     full_name: Optional[str] = None
+    group: int = Field(ge=1, le=4)
 
 
 class TokenResponse(BaseModel):
@@ -20,6 +21,7 @@ class TokenResponse(BaseModel):
     full_name: Optional[str] = None
     email: str
     role: str = "student"
+    group: Optional[int] = None
 
 
 class ProblemOut(BaseModel):
@@ -245,3 +247,57 @@ class TeacherExamDashboardOut(BaseModel):
     score_distribution: list[ScoreBucketOut]
     problems: list[ProblemStatOut]
     students: list[StudentRowOut]
+
+
+# ---- Vistas de admin ----
+
+
+class AdminTeacherIn(BaseModel):
+    email: str
+    full_name: str
+    group: int = Field(ge=1, le=4)
+
+
+class AdminTeacherOut(BaseModel):
+    id: int
+    email: str
+    full_name: Optional[str] = None
+    group: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---- Roster de estudiantes (docente) ----
+
+
+class AddStudentIn(BaseModel):
+    full_name: str
+    documento: str
+    email: str
+
+
+class StudentRosterOut(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    documento: str
+
+    class Config:
+        from_attributes = True
+
+
+class RosterRejectedRowOut(BaseModel):
+    row: int
+    motivo: str
+
+
+class ImportRosterResultOut(BaseModel):
+    created: int
+    skipped: int
+    rejected: list[RosterRejectedRowOut]
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)

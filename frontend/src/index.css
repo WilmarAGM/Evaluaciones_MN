@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+  --color-brand-900: #312e81;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  background: #0b0d17;
+  color: #e5e7eb;
+}
+
+.markdown-body h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  color: #f3f4f6;
+}
+
+.markdown-body h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.4rem;
+  color: #f3f4f6;
+}
+
+.markdown-body p {
+  margin: 0.6rem 0;
+  line-height: 1.65;
+  color: #cbd5e1;
+}
+
+.markdown-body ol,
+.markdown-body ul {
+  margin: 0.5rem 0 0.5rem 1.4rem;
+  color: #cbd5e1;
+}
+
+.markdown-body li {
+  margin: 0.25rem 0;
+}
+
+.markdown-body code {
+  background: #1e2233;
+  color: #a5b4fc;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.9em;
+}
+
+.markdown-body strong {
+  color: #f3f4f6;
+}
+
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+
+.markdown-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 8px;
+}

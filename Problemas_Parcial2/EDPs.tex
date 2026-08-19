@@ -1,0 +1,124 @@
+\documentclass{article}
+\usepackage[spanish]{babel}
+\usepackage{multicol}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{enumerate}
+\usepackage[utf8]{inputenc}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{wasysym}
+\usepackage{moodle}
+\usepackage[usenames]{color}
+\newcommand{\radio}{\ooalign{\hidewidth$\bullet$\hidewidth\cr$\ocircle$}}
+\newcommand{\R}{$\mathbb{R}^3$ }
+\newcommand{\wi}{\displaystyle \int}
+\newtheorem{theorem}{Theorem}
+\usepackage[left=2.00cm, right=2.00cm, top=2.00cm, bottom=2.00cm]{geometry}
+\title{Parcial 2}
+\author{Departamento de matemáticas}
+\date{\today}
+
+\begin{document}
+	\maketitle
+	\begin{quiz}{}
+    \begin{cloze}{}
+    	Considere la EDP parab\'olica
+    	\[\begin{cases}
+    		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+    		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+    		u(x,0) = x(1-x)
+    	\end{cases}\]
+       \begin{numerical}[points=15]{}
+       	Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+       	\end{numerical}
+        \begin{numerical}[points=18]{}
+        	Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.1,\ 0.125)$ de \item[tolerance=0.003] 0.808
+        \end{numerical}
+    \end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.2,\ 0.125)$ de \item[tolerance=0.003] 0.732
+	\end{numerical}
+\end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.3,\ 0.125)$ de \item[tolerance=0.003] 0.655
+	\end{numerical}
+\end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.4,\ 0.125)$ de \item[tolerance=0.003] 0.578
+	\end{numerical}
+\end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.5,\ 0.125)$ de \item[tolerance=0.003] 0.5
+	\end{numerical}
+\end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.6,\ 0.125)$ de \item[tolerance=0.003] 0.422
+	\end{numerical}
+\end{cloze}
+    \begin{cloze}{}
+	Considere la EDP parab\'olica
+	\[\begin{cases}
+		\displaystyle\frac{\partial u}{\partial t} = 4\frac{\partial^2 u}{\partial x^2}, \ x\in(0,1), \ t\in[0,1] \\
+		u(0,t) = e^{-t}, \ u(1,t)=\sin(t) \\
+		u(x,0) = x(1-x)
+	\end{cases}\]
+	\begin{numerical}[points=15]{}
+		Se desea emplear el m\'etodo de diferencias finitas progresivo  (adelante en tiempo) para aproximar la soluci\'on del problema, si $h=\frac{1}{10}$ entonces el m\'aximo valor $k$ (con cinco cifras) que se debe tomar para que el esquema sea estable es $k=$\item 0.00125
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Corriendo el m\'etodo con los valores de $h=\frac{1}{10}$ y $k$ anterior se obtiene un valor aproximado (con tres cifras) para $u(0.7,\ 0.125)$ de \item[tolerance=0.003] 0.345
+	\end{numerical}
+\end{cloze}
+    \end{quiz}
+\end{document}

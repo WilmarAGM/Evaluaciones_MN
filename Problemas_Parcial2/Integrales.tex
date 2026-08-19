@@ -1,0 +1,112 @@
+\documentclass{article}
+\usepackage[spanish]{babel}
+\usepackage{multicol}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{enumerate}
+\usepackage[utf8]{inputenc}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{wasysym}
+\usepackage{moodle}
+\usepackage[usenames]{color}
+\newcommand{\radio}{\ooalign{\hidewidth$\bullet$\hidewidth\cr$\ocircle$}}
+\newcommand{\R}{$\mathbb{R}^3$ }
+\newcommand{\wi}{\displaystyle \int}
+\newtheorem{theorem}{Theorem}
+\usepackage[left=2.00cm, right=2.00cm, top=2.00cm, bottom=2.00cm]{geometry}
+\title{Parcial 2}
+\author{Departamento de matemáticas}
+\date{\today}
+
+\begin{document}
+	\maketitle
+	\begin{quiz}{}
+	\begin{cloze}{}
+		Considere la integral:
+		\[\displaystyle\int_{-\infty}^{\infty}f(x)dx\]
+		donde $f(x) = \displaystyle\frac{e^{-x^2}\sin(x)}{x\sqrt{x^2+1}}$
+		Dicha integral se debe de escribir de la forma:
+		\[\displaystyle\int_{-\infty}^{-1}f(x)dx + \displaystyle\int_{A}^{B}f(x)dx+\displaystyle\int_{B}^{C}f(x)dx+ \displaystyle\int_{1}^{\infty}f(x)dx\]
+	    \begin{numerical}[points=5]{}
+	    	el valor A es \item -1
+	    \end{numerical}
+         \begin{numerical}[points=5]{}
+        	el valor B es \item 0
+        \end{numerical}
+         \begin{numerical}[points=5]{}
+        	el valor C es \item 1
+        \end{numerical}
+		\begin{numerical}[points=18]{}
+			Realizando la sustituci\'on apropiada y usando una cuadratura Gaussiana de 3 nodos la integral con tres cifras decimales da aproximadamente \item[tolerance=0.003] 1.422
+		\end{numerical}
+	\end{cloze}
+	\begin{cloze}{}
+	Considere la integral:
+	\[\displaystyle\int_{-\infty}^{\infty}f(x)dx\]
+	donde $f(x) = \displaystyle\frac{2e^{-(x-1)^2}\sin(x-1)}{(x-1)\sqrt{(x-1)^2+1}}$
+	Dicha integral se debe de escribir de la forma:
+	\[\displaystyle\int_{-\infty}^{-1}f(x)dx + \displaystyle\int_{-1}^{A}f(x)dx +  \displaystyle\int_{A}^{B}f(x)dx + \displaystyle\int_{2}^{\infty}f(x)dx\]
+	\begin{numerical}[points=8]{}
+		el valor A es \item 1
+	\end{numerical}
+	\begin{numerical}[points=7]{}
+		el valor B es \item 2
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Realizando la sustituci\'on apropiada y usando una cuadratura Gaussiana de 3 nodos la integral con tres cifras decimales da aproximadamente \item[tolerance=0.003] 2.866
+	\end{numerical}
+\end{cloze}
+\begin{cloze}{}
+	Considere la integral:
+	\[\displaystyle\int_{-\infty}^{\infty}f(x)dx\]
+	donde $f(x) = \displaystyle\frac{3e^{-(x+1)^2}\sin(x+1)}{(x+1)\sqrt{(x+1)^2+1}}$
+	Dicha integral se debe de escribir de la forma:
+	\[\displaystyle\int_{-\infty}^{-2}f(x)dx + \displaystyle\int_{A}^{B}f(x)dx+\displaystyle\int_{B}^{1}f(x)dx+ \displaystyle\int_{1}^{\infty}f(x)dx\]
+	\begin{numerical}[points=8]{}
+		el valor A es \item -2
+	\end{numerical}
+	\begin{numerical}[points=7]{}
+		el valor B es \item -1
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Realizando la sustituci\'on apropiada y usando una cuadratura Gaussiana de 3 nodos la integral con tres cifras decimales da aproximadamente \item[tolerance=0.003] 4.299
+	\end{numerical}
+\end{cloze}
+\begin{cloze}{}
+	Considere la integral:
+	\[\displaystyle\int_{-\infty}^{\infty}f(x)dx\]
+	donde $f(x) = \displaystyle\frac{2e^{-(x+2)^2}\sin(x+2)}{(x+2)\sqrt{(x+2)^2+1}}$
+	Dicha integral se debe de escribir de la forma:
+	\[\displaystyle\int_{-\infty}^{-3}f(x)dx + \displaystyle\int_{A}^{B}f(x)dx+\displaystyle\int_{B}^{C}f(x)dx+ \displaystyle\int_{-1}^{1}f(x)dx+ \displaystyle\int_{1}^{\infty}f(x)dx\]
+	\begin{numerical}[points=5]{}
+		el valor A es \item -3
+	\end{numerical}
+	\begin{numerical}[points=5]{}
+		el valor B es \item -2
+	\end{numerical}
+	\begin{numerical}[points=5]{}
+		el valor C es \item -1
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Realizando la sustituci\'on apropiada y usando una cuadratura Gaussiana de 3 nodos la integral con tres cifras decimales da aproximadamente \item[tolerance=0.003] 2.864
+	\end{numerical}
+\end{cloze}
+\begin{cloze}{}
+	Considere la integral:
+	\[\displaystyle\int_{-\infty}^{\infty}f(x)dx\]
+	donde $f(x) = \displaystyle\frac{4e^{-(x-0.5)^2}\sin(x-0.5)}{(x-0.5)\sqrt{(x-0.5)^2+1}}$
+	Dicha integral se debe de escribir de la forma:
+	\[\displaystyle\int_{-\infty}^{-1}f(x)dx + \displaystyle\int_{-1}^{A}f(x)dx +  \displaystyle\int_{A}^{B}f(x)dx + \displaystyle\int_{1}^{\infty}f(x)dx\]
+	\begin{numerical}[points=8]{}
+		el valor A es \item 0.5
+	\end{numerical}
+	\begin{numerical}[points=7]{}
+		el valor B es \item 1
+	\end{numerical}
+	\begin{numerical}[points=18]{}
+		Realizando la sustituci\'on apropiada y usando una cuadratura Gaussiana de 3 nodos la integral con tres cifras decimales da aproximadamente \item[tolerance=0.003] 5.641
+	\end{numerical}
+\end{cloze}
+    \end{quiz}
+\end{document}

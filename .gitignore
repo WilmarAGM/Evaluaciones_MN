@@ -1,0 +1,27 @@
+# Python
+backend/venv/
+**/__pycache__/
+*.pyc
+
+# BD local y backups (datos reales de estudiantes)
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/*.db.bak*
+docker_data/
+prod_backups/
+
+# Secretos / config local
+backend/.env
+backend/.gemini_quota.json*
+.claude/settings.local.json
+
+# Datos personales de estudiantes (nombres, documento, correo)
+LMN.xls
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store

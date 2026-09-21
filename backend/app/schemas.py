@@ -278,6 +278,11 @@ class AdminTeacherIn(BaseModel):
     group: int = Field(ge=1, le=4)
 
 
+class AdminGroupStudentsOut(BaseModel):
+    group: int
+    count: int
+
+
 class AdminTeacherOut(BaseModel):
     id: int
     email: str

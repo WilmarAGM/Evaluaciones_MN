@@ -13,6 +13,8 @@ export default function AdminTeachers() {
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [studentCounts, setStudentCounts] = useState([]);
+  const [deletingGroup, setDeletingGroup] = useState(null);
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
@@ -51,6 +53,34 @@ export default function AdminTeachers() {
       setError(err.response?.data?.detail || "No se pudo crear el docente.");
     } finally {
       setCreating(false);
+    }
+  }
+
+  function loadStudentCounts() {
+    return api
+      .getAdminStudentSummary()
+      .then(setStudentCounts)
+      .catch(() => setStudentCounts([]));
+  }
+
+  useEffect(() => {
+    loadStudentCounts();
+  }, []);
+
+  async function handleDeleteGroupStudents(group, count) {
+    const confirmed = window.confirm(
+      `¿Eliminar los ${count} estudiante(s) del Grupo ${group}?\n\nSe borran también, de forma permanente, todos sus intentos y entregas. Las cuentas docente y admin no se tocan. Esta acción NO se puede deshacer.`
+    );
+    if (!confirmed) return;
+
+    setDeletingGroup(group);
+    try {
+      await api.deleteAdminGroupStudents(group);
+      await loadStudentCounts();
+    } catch (err) {
+      window.alert(err.response?.data?.detail || "No se pudieron eliminar los estudiantes.");
+    } finally {
+      setDeletingGroup(null);
     }
   }
 
@@ -151,6 +181,36 @@ export default function AdminTeachers() {
             La contraseña inicial siempre es <span className="font-mono">123456789</span>; el docente la cambia
             desde "Cambiar contraseña" al entrar.
           </p>
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-10">
+          <h2 className="text-lg font-semibold text-white mb-1">Estudiantes por grupo</h2>
+          <p className="text-xs text-slate-500 mb-4">
+            Elimina todos los estudiantes de un grupo, con sus intentos y entregas (por ejemplo, al empezar un
+            semestre nuevo). No afecta a los docentes.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {studentCounts.map(({ group: g, count }) => (
+              <div
+                key={g}
+                className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3"
+              >
+                <div>
+                  <p className="text-white font-medium">Grupo {g}</p>
+                  <p className="text-slate-400 text-sm">
+                    {count} estudiante{count === 1 ? "" : "s"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleDeleteGroupStudents(g, count)}
+                  disabled={count === 0 || deletingGroup === g}
+                  className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {deletingGroup === g ? "Eliminando..." : "🗑 Eliminar estudiantes"}
+                </button>
+              </div>
+            ))}
+          </div>
         </section>
 
         {loading && <p className="text-slate-500">Cargando...</p>}

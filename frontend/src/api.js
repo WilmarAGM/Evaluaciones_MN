@@ -253,6 +253,16 @@ export async function createAdminTeacher({ email, fullName, group }) {
   return data;
 }
 
+export async function getAdminStudentSummary() {
+  const { data } = await client.get("/api/admin/students/summary");
+  return data;
+}
+
+export async function deleteAdminGroupStudents(group) {
+  const { data } = await client.delete(`/api/admin/students/group/${group}`);
+  return data;
+}
+
 export async function deleteAdminTeacher(teacherId) {
   const { data } = await client.delete(`/api/admin/teachers/${teacherId}`);
   return data;

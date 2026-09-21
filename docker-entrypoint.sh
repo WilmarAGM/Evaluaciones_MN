@@ -10,7 +10,8 @@ python -m app.migrate_session_proctoring /app/data/evaluaciones.db
 
 # Idempotente: cada función de seed ya verifica si el dato existe antes de crearlo.
 python -m app.seed
-python -m app.import_students
+# import_students (roster legado LMN.xls) ya NO corre al arrancar: recrearía los
+# estudiantes que el admin/docente borró. Los rosters se cargan con el .xlsx del docente.
 python -m app.seed_taller
 python -m app.seed_parcial2
 

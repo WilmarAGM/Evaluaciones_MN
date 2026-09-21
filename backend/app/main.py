@@ -1435,6 +1435,33 @@ def admin_list_teachers(db: Session = Depends(get_db), admin: models.Student = D
     )
 
 
+@app.get("/api/admin/students/summary", response_model=list[schemas.AdminGroupStudentsOut])
+def admin_students_summary(db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)):
+    """Cuántos estudiantes tiene cada grupo (1-4), para el panel de admin."""
+    counts = {g: 0 for g in range(1, 5)}
+    for (group,) in db.query(models.Student.group).filter(models.Student.role == "student").all():
+        if group in counts:
+            counts[group] += 1
+    return [schemas.AdminGroupStudentsOut(group=g, count=n) for g, n in counts.items()]
+
+
+@app.delete("/api/admin/students/group/{group}")
+def admin_delete_group_students(
+    group: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    """Elimina TODOS los estudiantes de un grupo (y sus intentos/entregas).
+    Irreversible; no toca cuentas de docente ni de admin."""
+    if group < 1 or group > 4:
+        raise HTTPException(status_code=400, detail="El grupo debe estar entre 1 y 4.")
+    student_ids = [
+        row.id
+        for row in db.query(models.Student.id)
+        .filter(models.Student.role == "student", models.Student.group == group)
+        .all()
+    ]
+    return {"deleted": True, "group": group, "count": delete_students_with_data(db, student_ids)}
+
+
 @app.post("/api/admin/teachers", response_model=schemas.AdminTeacherOut)
 def admin_create_teacher(
     payload: schemas.AdminTeacherIn,
@@ -1562,6 +1589,30 @@ def teacher_delete_student(
     return {"deleted": True, "student_id": student_id}
 
 
+def delete_students_with_data(db: Session, student_ids: list[int]) -> int:
+    """Borra estudiantes junto con sus entregas, intentos y problemas asignados
+    (irreversible). Devuelve cuántos estudiantes se borraron."""
+    if not student_ids:
+        return 0
+    db.query(models.Submission).filter(models.Submission.student_id.in_(student_ids)).delete(
+        synchronize_session=False
+    )
+    attempt_ids = [
+        row.id
+        for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.student_id.in_(student_ids)).all()
+    ]
+    if attempt_ids:
+        db.query(models.AttemptProblem).filter(models.AttemptProblem.attempt_id.in_(attempt_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id.in_(student_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
+    db.commit()
+    return len(student_ids)
+
+
 @app.delete("/api/teacher/students")
 def teacher_delete_group(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
     """Elimina TODO el roster del grupo del docente (y sus intentos/entregas).
@@ -1573,24 +1624,7 @@ def teacher_delete_group(db: Session = Depends(get_db), teacher: models.Student 
         .filter(models.Student.role == "student", models.Student.group == teacher.group)
         .all()
     ]
-    if student_ids:
-        db.query(models.Submission).filter(models.Submission.student_id.in_(student_ids)).delete(
-            synchronize_session=False
-        )
-        attempt_ids = [
-            row.id
-            for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.student_id.in_(student_ids)).all()
-        ]
-        if attempt_ids:
-            db.query(models.AttemptProblem).filter(models.AttemptProblem.attempt_id.in_(attempt_ids)).delete(
-                synchronize_session=False
-            )
-        db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id.in_(student_ids)).delete(
-            synchronize_session=False
-        )
-        db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
-    db.commit()
-    return {"deleted": True, "count": len(student_ids)}
+    return {"deleted": True, "count": delete_students_with_data(db, student_ids)}
 
 
 ROSTER_COLUMNS = {

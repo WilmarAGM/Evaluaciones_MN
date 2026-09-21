@@ -35,12 +35,32 @@ export default function TeacherExamDashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    api
+  function loadDashboard() {
+    return api
       .getTeacherDashboard(examId)
       .then(setDash)
       .catch(() => setError("No se pudo cargar el dashboard."));
+  }
+
+  useEffect(() => {
+    loadDashboard();
   }, [examId]);
+
+  async function reinstate(studentId) {
+    if (!window.confirm("¿Reactivar este intento? Recuperará su nota real (se recalifica lo que alcanzó a guardar).")) return;
+    try {
+      await api.reinstateAttempt(examId, studentId);
+      setDetailsById((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+      setExpandedId(null);
+      await loadDashboard();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "No se pudo reactivar el intento.");
+    }
+  }
 
   async function toggleStudent(studentId) {
     if (expandedId === studentId) {
@@ -205,9 +225,20 @@ export default function TeacherExamDashboard() {
                         </td>
                         <td className="px-5 py-2 text-slate-400">{s.email}</td>
                         <td className="px-5 py-2">
-                          <span className={`text-xs font-medium rounded-full border px-2.5 py-1 ${STATUS_CLS[s.status]}`}>
-                            {STATUS_LABEL[s.status]}
-                          </span>
+                          {s.annulled ? (
+                            <span className="text-xs font-medium rounded-full border px-2.5 py-1 bg-rose-500/15 text-rose-400 border-rose-500/30">
+                              Anulado
+                            </span>
+                          ) : (
+                            <span className={`text-xs font-medium rounded-full border px-2.5 py-1 ${STATUS_CLS[s.status]}`}>
+                              {STATUS_LABEL[s.status]}
+                            </span>
+                          )}
+                          {s.violations > 0 && (
+                            <span className="ml-2 text-xs text-amber-400" title="Salidas de la ventana del examen">
+                              ⚠ {s.violations}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-2 text-right text-slate-300">
                           {s.total_score.toFixed(1)} / {s.max_score.toFixed(0)}
@@ -222,6 +253,23 @@ export default function TeacherExamDashboard() {
                             )}
                             {detail?.error && (
                               <p className="text-rose-400 text-sm">No se pudieron cargar las respuestas.</p>
+                            )}
+                            {detail?.annulled && (
+                              <div className="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 flex items-start justify-between gap-4">
+                                <p className="text-rose-200/90 text-sm">
+                                  <span className="font-semibold text-rose-300">Anulado (nota 0). </span>
+                                  {detail.annul_reason} Abajo se muestra el trabajo real, solo para tu revisión.
+                                </p>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    reinstate(s.student_id);
+                                  }}
+                                  className="shrink-0 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/5 transition"
+                                >
+                                  Reactivar intento
+                                </button>
+                              </div>
                             )}
                             {detail && !detail.error && (
                               <div className="space-y-3">

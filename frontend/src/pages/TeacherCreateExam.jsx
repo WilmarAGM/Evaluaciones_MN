@@ -15,6 +15,8 @@ export default function TeacherCreateExam() {
   const [description, setDescription] = useState("");
   const [untimed, setUntimed] = useState(false);
   const [durationMinutes, setDurationMinutes] = useState(50);
+  const [proctored, setProctored] = useState(true);
+  const [maxViolations, setMaxViolations] = useState(3);
   const [rows, setRows] = useState([emptyRow()]);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -86,6 +88,7 @@ export default function TeacherCreateExam() {
         title: title.trim(),
         description: description.trim() || null,
         duration_minutes: untimed ? null : Number(durationMinutes) || null,
+        max_violations: proctored ? Number(maxViolations) || 3 : 0,
         slots,
       });
       navigate("/teacher/exams");
@@ -152,6 +155,34 @@ export default function TeacherCreateExam() {
                     className="w-24 rounded-lg bg-black/30 border border-white/10 px-3 py-1.5 text-white focus:outline-none focus:border-brand-400/60"
                   />
                 </div>
+              )}
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 p-3 space-y-2">
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={proctored}
+                  onChange={(e) => setProctored(e.target.checked)}
+                  className="rounded border-white/20 bg-black/30"
+                />
+                Control de salidas de la ventana (exige pantalla completa)
+              </label>
+              {proctored ? (
+                <div className="flex items-center gap-2 pl-6">
+                  <label className="text-sm text-slate-400">Máximo de salidas antes de anular con nota 0</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={maxViolations}
+                    onChange={(e) => setMaxViolations(e.target.value)}
+                    className="w-20 rounded-lg bg-black/30 border border-white/10 px-3 py-1.5 text-white focus:outline-none focus:border-brand-400/60"
+                  />
+                </div>
+              ) : (
+                <p className="pl-6 text-xs text-slate-500">
+                  Recomendado solo para exámenes de práctica: el estudiante puede cambiar de ventana libremente.
+                </p>
               )}
             </div>
           </div>

@@ -15,8 +15,45 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
+// Identificador del navegador: permite que un estudiante recupere su propia
+// sesión (p. ej. cerró la pestaña) sin esperar a que venza la inactividad.
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem("device_id");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("device_id", id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+// Si el servidor invalida la sesión (otra sesión la reemplazó, el docente la
+// liberó o el token venció), se limpia todo y se manda al login con un aviso.
+const SESSION_LOST_DETAILS = ["Tu sesión ya no es válida. Inicia sesión de nuevo.", "Credenciales inválidas"];
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const detail = error.response?.data?.detail;
+    if (error.response?.status === 401 && SESSION_LOST_DETAILS.includes(detail) && localStorage.getItem("token")) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      sessionStorage.setItem("session_notice", "Tu sesión terminó. Inicia sesión de nuevo.");
+      window.location.href = "/";
+    }
+    return Promise.reject(error);
+  }
+);
+
 export async function login(email, password) {
-  const { data } = await client.post("/api/auth/login", { email, password });
+  const { data } = await client.post("/api/auth/login", { email, password, device_id: getDeviceId() });
+  return data;
+}
+
+export async function logout() {
+  const { data } = await client.post("/api/auth/logout");
   return data;
 }
 
@@ -58,6 +95,11 @@ export async function finishExam(examId) {
   return data;
 }
 
+export async function reportViolation(examId, kind) {
+  const { data } = await client.post(`/api/exams/${examId}/violation`, { kind });
+  return data;
+}
+
 export async function getExamResults(examId) {
   const { data } = await client.get(`/api/exams/${examId}/results`);
   return data;
@@ -95,6 +137,16 @@ export async function getTeacherDashboard(examId) {
 
 export async function getTeacherStudentSubmissions(examId, studentId) {
   const { data } = await client.get(`/api/teacher/exams/${examId}/students/${studentId}/submissions`);
+  return data;
+}
+
+export async function reinstateAttempt(examId, studentId) {
+  const { data } = await client.post(`/api/teacher/exams/${examId}/students/${studentId}/reinstate`);
+  return data;
+}
+
+export async function releaseStudentSession(studentId) {
+  const { data } = await client.post(`/api/teacher/students/${studentId}/release-session`);
   return data;
 }
 

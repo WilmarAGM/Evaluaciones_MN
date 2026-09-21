@@ -53,6 +53,16 @@ export default function ResultsPage() {
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-10">
+        {results.annulled && (
+          <div className="mb-8 rounded-2xl border border-rose-500/40 bg-rose-500/10 p-5">
+            <p className="text-rose-300 font-semibold">Examen anulado — calificación 0</p>
+            <p className="text-rose-200/80 text-sm mt-1">{results.annul_reason}</p>
+            <p className="text-slate-400 text-xs mt-2">
+              Si crees que se trata de un error, comunícate con tu docente.
+            </p>
+          </div>
+        )}
+
         <div className="text-center mb-10">
           <p className="text-slate-400 text-sm">{results.exam_title}</p>
           <h1 className="text-4xl font-bold text-white mt-2">

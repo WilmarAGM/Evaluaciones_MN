@@ -32,6 +32,13 @@ class Student(Base):
     # para "admin", que no dicta ningún grupo.
     group = Column(Integer, nullable=True)
 
+    # Sesión única por estudiante (ver security.py): identificador de la sesión
+    # vigente, navegador que la abrió y último momento de actividad. Solo se
+    # usan para role == "student".
+    session_id = Column(String, nullable=True)
+    device_id = Column(String, nullable=True)
+    last_seen = Column(DateTime, nullable=True)
+
     submissions = relationship("Submission", back_populates="student")
 
 
@@ -44,6 +51,10 @@ class Exam(Base):
     duration_minutes = Column(Integer, default=50, nullable=True)  # None = sin límite de tiempo
     is_open = Column(Boolean, default=True, nullable=False)  # el docente habilita/deshabilita el acceso
     group = Column(Integer, nullable=True)  # grupo dueño del examen (1-4)
+    # Máximo de salidas de la ventana del examen antes de anularlo con nota 0.
+    # 0 = control desactivado (exámenes de práctica). Si es > 0 el frontend
+    # además exige pantalla completa.
+    max_violations = Column(Integer, default=0, nullable=False, server_default="0")
 
     exam_problems = relationship(
         "ExamProblem", back_populates="exam", order_by="ExamProblem.order",
@@ -159,6 +170,13 @@ class ExamAttempt(Base):
     duration_seconds = Column(Integer, nullable=False)
     finished_at = Column(DateTime, nullable=True)
 
+    # Control de salidas de ventana (ver Exam.max_violations). Un intento
+    # anulado queda cerrado (finished_at) y se califica 0 sin importar lo enviado.
+    violations = Column(Integer, default=0, nullable=False, server_default="0")
+    violation_log = Column(Text, default="[]", nullable=False, server_default="[]")  # JSON: [{"at": iso, "kind": str}]
+    annulled_at = Column(DateTime, nullable=True)
+    annul_reason = Column(Text, nullable=True)
+
     student = relationship("Student")
     exam = relationship("Exam")
     assigned_problems = relationship(
@@ -175,7 +193,7 @@ class AttemptProblem(Base):
     el sorteo."""
 
     __tablename__ = "attempt_problems"
-    __table_args__ = (UniqueConstraint("attempt_id", "slot_id", name="uq_attempt_slot"),)
+    __table_args__ = (UniqueConstraint("attempt_id", "problem_id", name="uq_attempt_problem"),)
 
     id = Column(Integer, primary_key=True, index=True)
     attempt_id = Column(Integer, ForeignKey("exam_attempts.id"), nullable=False)

@@ -17,6 +17,13 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY") or secrets.token_hex(32)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
+# Sesión única por estudiante: una cuenta con actividad en los últimos
+# SESSION_IDLE_MINUTES bloquea nuevos inicios de sesión desde otro navegador.
+SESSION_IDLE_MINUTES = 10
+# last_seen se refresca como máximo cada tantos segundos, para no escribir en
+# la base de datos en cada petición.
+LAST_SEEN_REFRESH_SECONDS = 30
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
@@ -36,6 +43,31 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def has_active_session(student: models.Student) -> bool:
+    """True si el estudiante tiene una sesión abierta con actividad reciente."""
+    if not student.session_id or student.last_seen is None:
+        return False
+    return _utcnow() - _aware(student.last_seen) < timedelta(minutes=SESSION_IDLE_MINUTES)
+
+
+def start_session(db: Session, student: models.Student, device_id: str | None) -> str:
+    """Abre una sesión nueva (reemplaza la anterior si la hubiera) y devuelve
+    su identificador, que va como claim `sid` dentro del JWT."""
+    student.session_id = secrets.token_hex(16)
+    student.device_id = device_id
+    student.last_seen = _utcnow()
+    db.commit()
+    return student.session_id
+
+
 def get_current_student(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.Student:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -53,6 +85,22 @@ def get_current_student(token: str = Depends(oauth2_scheme), db: Session = Depen
     student = db.query(models.Student).filter(models.Student.email == email).first()
     if student is None:
         raise credentials_exception
+
+    # Sesión única: solo aplica a estudiantes. El token debe corresponder a la
+    # sesión vigente; si el estudiante salió, o el docente la liberó y se abrió
+    # otra, este token deja de valer.
+    if student.role == "student":
+        if payload.get("sid") is None or payload.get("sid") != student.session_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Tu sesión ya no es válida. Inicia sesión de nuevo.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if student.last_seen is None or (
+            _utcnow() - _aware(student.last_seen) > timedelta(seconds=LAST_SEEN_REFRESH_SECONDS)
+        ):
+            student.last_seen = _utcnow()
+            db.commit()
     return student
 
 

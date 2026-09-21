@@ -27,7 +27,13 @@ export function AuthProvider({ children }) {
     return userInfo;
   }
 
-  function signOut() {
+  async function signOut() {
+    // Libera la sesión única en el servidor (mejor esfuerzo: si falla, igual se sale).
+    try {
+      await api.logout();
+    } catch {
+      /* sin conexión o sesión ya inválida */
+    }
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setUser(null);

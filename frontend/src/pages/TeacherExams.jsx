@@ -124,6 +124,11 @@ export default function TeacherExams() {
                 </span>
               </div>
               <p className="text-slate-400 text-sm mt-2">{exam.description}</p>
+              <p className="text-xs mt-2 text-slate-500">
+                {exam.max_violations > 0
+                  ? `🔒 Control de ventana: se anula con ${exam.max_violations} salidas`
+                  : "Sin control de ventana"}
+              </p>
 
               <div className="grid grid-cols-3 gap-2 mt-4 text-center">
                 <div className="rounded-lg bg-black/20 py-2">

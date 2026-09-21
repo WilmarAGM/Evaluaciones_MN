@@ -125,6 +125,15 @@ export default function TeacherStudents() {
     }
   }
 
+  async function handleRelease(student) {
+    try {
+      await api.releaseStudentSession(student.id);
+      setStudents((prev) => prev.map((s) => (s.id === student.id ? { ...s, session_active: false } : s)));
+    } catch (err) {
+      window.alert(err.response?.data?.detail || "No se pudo liberar la sesión.");
+    }
+  }
+
   async function handleDelete(student) {
     const confirmed = window.confirm(`¿Eliminar a ${student.full_name || student.email}? Esta acción no se puede deshacer.`);
     if (!confirmed) return;
@@ -249,6 +258,7 @@ export default function TeacherStudents() {
                   <th className="px-4 py-3">Nombre</th>
                   <th className="px-4 py-3">Documento</th>
                   <th className="px-4 py-3">Correo</th>
+                  <th className="px-4 py-3">Sesión</th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
@@ -258,6 +268,24 @@ export default function TeacherStudents() {
                     <td className="px-4 py-2.5">{s.full_name}</td>
                     <td className="px-4 py-2.5">{s.documento}</td>
                     <td className="px-4 py-2.5">{s.email}</td>
+                    <td className="px-4 py-2.5">
+                      {s.session_active ? (
+                        <span className="inline-flex items-center gap-2">
+                          <span className="text-xs font-medium rounded-full border px-2 py-0.5 bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
+                            Activa
+                          </span>
+                          <button
+                            onClick={() => handleRelease(s)}
+                            className="text-xs rounded-lg border border-white/15 px-2 py-0.5 text-slate-300 hover:bg-white/5 transition"
+                            title="Cierra su sesión para que pueda volver a ingresar de inmediato"
+                          >
+                            Liberar
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-600">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5 text-right">
                       <button
                         onClick={() => handleDelete(s)}

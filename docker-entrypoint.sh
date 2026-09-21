@@ -3,6 +3,11 @@ set -e
 
 cd /app/backend
 
+# Migraciones idempotentes de esquema, ANTES de los seeds (que ya usan el
+# modelo nuevo). Si la BD aún no existe o le faltan tablas, no hacen nada.
+python -m app.migrate_attempt_problems /app/data/evaluaciones.db
+python -m app.migrate_session_proctoring /app/data/evaluaciones.db
+
 # Idempotente: cada función de seed ya verifica si el dato existe antes de crearlo.
 python -m app.seed
 python -m app.import_students

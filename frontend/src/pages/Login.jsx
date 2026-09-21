@@ -5,7 +5,15 @@ import { useAuth } from "../AuthContext";
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    try {
+      // Se lee sin borrar: la pantalla puede montarse dos veces seguidas (navegación
+      // interna y luego recarga completa). Se limpia al intentar ingresar.
+      return sessionStorage.getItem("session_notice") || "";
+    } catch {
+      return "";
+    }
+  });
   const [loading, setLoading] = useState(false);
   const { signIn } = useAuth();
   const navigate = useNavigate();
@@ -13,6 +21,11 @@ export default function Login() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+    try {
+      sessionStorage.removeItem("session_notice");
+    } catch {
+      /* sin sessionStorage */
+    }
     setLoading(true);
     try {
       const userInfo = await signIn(email, password);

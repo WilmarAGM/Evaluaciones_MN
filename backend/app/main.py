@@ -25,6 +25,9 @@ from .security import (
     get_current_student,
     get_current_teacher,
     get_current_admin,
+    has_active_session,
+    start_session,
+    SESSION_IDLE_MINUTES,
 )
 
 ALLOWED_EMAIL_DOMAIN = "@unal.edu.co"
@@ -76,12 +79,25 @@ def get_or_create_attempt(db: Session, student: models.Student, exam: models.Exa
     return attempt
 
 
+def _proctoring_status(attempt: models.ExamAttempt) -> dict:
+    return {
+        "violations": attempt.violations or 0,
+        "max_violations": attempt.exam.max_violations or 0,
+        "annulled": attempt.annulled_at is not None,
+        "annul_reason": attempt.annul_reason,
+    }
+
+
 def attempt_status(attempt: models.ExamAttempt, db: Session) -> dict:
     started_at = _aware(attempt.started_at)
+    proctoring = _proctoring_status(attempt)
 
     if attempt.exam.duration_minutes is None:
         finished = attempt.finished_at is not None
-        return {"started_at": started_at, "duration_seconds": None, "remaining_seconds": None, "finished": finished}
+        return {
+            "started_at": started_at, "duration_seconds": None, "remaining_seconds": None,
+            "finished": finished, **proctoring,
+        }
 
     deadline = started_at + timedelta(seconds=attempt.duration_seconds)
     remaining = int((deadline - now()).total_seconds())
@@ -93,13 +109,18 @@ def attempt_status(attempt: models.ExamAttempt, db: Session) -> dict:
 
     remaining = max(0, remaining)
     finished = attempt.finished_at is not None
-    return {"started_at": started_at, "duration_seconds": attempt.duration_seconds, "remaining_seconds": remaining, "finished": finished}
+    return {
+        "started_at": started_at, "duration_seconds": attempt.duration_seconds, "remaining_seconds": remaining,
+        "finished": finished, **_proctoring_status(attempt),
+    }
 
 
 def require_active_attempt(db: Session, student: models.Student, exam: models.Exam) -> models.ExamAttempt:
     attempt = get_or_create_attempt(db, student, exam)
     status = attempt_status(attempt, db)
     if status["finished"]:
+        if status["annulled"]:
+            raise HTTPException(status_code=403, detail="Tu examen fue anulado; ya no puedes enviar respuestas.")
         raise HTTPException(status_code=403, detail="El tiempo del examen ha finalizado.")
     return attempt
 
@@ -222,7 +243,24 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     if not student or not verify_password(payload.password, student.hashed_password):
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
 
-    token = create_access_token({"sub": student.email})
+    claims = {"sub": student.email}
+    if student.role == "student":
+        # Sesión única: si ya hay una sesión con actividad reciente se rechaza el
+        # ingreso nuevo (no se expulsa a quien ya está dentro), salvo que venga
+        # del mismo navegador que abrió la sesión (p. ej. cerró la pestaña).
+        same_device = bool(payload.device_id) and payload.device_id == student.device_id
+        if has_active_session(student) and not same_device:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Esta cuenta ya tiene una sesión abierta en otro dispositivo. Ciérrala allí "
+                    f"o espera {SESSION_IDLE_MINUTES} minutos sin actividad; si no puedes, "
+                    "pídele a tu docente que la libere."
+                ),
+            )
+        claims["sid"] = start_session(db, student, payload.device_id)
+
+    token = create_access_token(claims)
     return schemas.TokenResponse(
         access_token=token, full_name=student.full_name, email=student.email, role=student.role, group=student.group
     )
@@ -256,10 +294,22 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(student)
 
-    token = create_access_token({"sub": student.email})
+    sid = start_session(db, student, None)
+    token = create_access_token({"sub": student.email, "sid": sid})
     return schemas.TokenResponse(
         access_token=token, full_name=student.full_name, email=student.email, role=student.role, group=student.group
     )
+
+
+@app.post("/api/auth/logout")
+def logout(db: Session = Depends(get_db), current: models.Student = Depends(get_current_student)):
+    """Libera la sesión única del estudiante para que pueda entrar de nuevo
+    desde otro dispositivo sin esperar a que venza la inactividad."""
+    if current.role == "student":
+        current.session_id = None
+        current.last_seen = None
+        db.commit()
+    return {"logged_out": True}
 
 
 @app.post("/api/auth/change-password")
@@ -350,12 +400,16 @@ def resolve_exam_problems(db: Session, student: models.Student, exam: models.Exa
 
     order = 0
     rows = []
+    # Un problema no puede asignarse dos veces en el mismo intento (ni por
+    # dos slots aleatorios del mismo banco, ni por un slot fijo + uno aleatorio).
+    used = {s.problem_id for s in exam.slots if s.kind == "fixed"}
     for slot in sorted(exam.slots, key=lambda s: s.order):
         if slot.kind == "fixed":
             chosen = [slot.problem]
         else:
-            pool = [p for p in slot.bank.problems if p.status == "published"]
+            pool = [p for p in slot.bank.problems if p.status == "published" and p.id not in used]
             chosen = random.sample(pool, min(slot.count, len(pool)))
+            used.update(p.id for p in chosen)
         for problem in chosen:
             rows.append(
                 models.AttemptProblem(attempt_id=attempt.id, slot_id=slot.id, problem_id=problem.id, order=order)
@@ -384,6 +438,7 @@ def build_exam_out(exam: models.Exam, problems: list[models.Problem]) -> schemas
         title=exam.title,
         description=exam.description,
         duration_minutes=exam.duration_minutes,
+        max_violations=exam.max_violations or 0,
         problems=problems_out,
     )
 
@@ -414,6 +469,53 @@ def finish_exam(exam_id: int, db: Session = Depends(get_db), student: models.Stu
     return attempt_status(attempt, db)
 
 
+VIOLATION_KINDS = {"hidden", "blur", "fullscreen_exit"}
+# Un cambio de pestaña dispara varios eventos casi a la vez (visibilitychange,
+# blur, salida de pantalla completa); se cuentan como una sola salida.
+VIOLATION_DEDUPE_SECONDS = 2
+
+
+@app.post("/api/exams/{exam_id}/violation", response_model=schemas.AttemptOut)
+def report_violation(
+    exam_id: int,
+    payload: schemas.ViolationIn,
+    db: Session = Depends(get_db),
+    student: models.Student = Depends(get_current_student),
+):
+    """Registra una salida de la ventana del examen. El conteo vive en el
+    servidor (el navegador solo avisa); al llegar a exam.max_violations el
+    intento se cierra y se anula con nota 0."""
+    if payload.kind not in VIOLATION_KINDS:
+        raise HTTPException(status_code=400, detail="Tipo de evento inválido.")
+    exam = get_exam_or_404(db, exam_id, group=student.group)
+    attempt = peek_attempt(db, student, exam)
+    if attempt is None:
+        raise HTTPException(status_code=409, detail="No has iniciado este examen.")
+
+    status = attempt_status(attempt, db)
+    if exam.max_violations <= 0 or status["finished"]:
+        return status
+
+    log = json.loads(attempt.violation_log or "[]")
+    t = now()
+    if log and (t - datetime.fromisoformat(log[-1]["at"])).total_seconds() < VIOLATION_DEDUPE_SECONDS:
+        return status
+
+    log.append({"at": t.isoformat(), "kind": payload.kind})
+    attempt.violations = len(log)
+    attempt.violation_log = json.dumps(log)
+    if attempt.violations >= exam.max_violations:
+        attempt.finished_at = t
+        attempt.annulled_at = t
+        attempt.annul_reason = (
+            f"Saliste {attempt.violations} veces de la ventana del examen (cambio de pestaña o de ventana, "
+            f"o salida de la pantalla completa); el máximo permitido era {exam.max_violations}. "
+            "Por esa razón el examen fue anulado y su calificación es 0."
+        )
+    db.commit()
+    return attempt_status(attempt, db)
+
+
 @app.get("/api/exams/{exam_id}/results", response_model=schemas.ExamResultsOut)
 def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
     exam = get_exam_or_404(db, exam_id, group=student.group)
@@ -427,6 +529,8 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
     max_score = 0.0
     for problem in resolve_exam_problems(db, student, exam):
         submission, score, checks_report = student_problem_result(db, student, problem)
+        if status["annulled"]:
+            score, checks_report = 0.0, []
 
         problems_out.append(
             schemas.ProblemResultOut(
@@ -444,7 +548,13 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
         max_score += problem.max_score
 
     return schemas.ExamResultsOut(
-        exam_title=exam.title, total_score=total_score, max_score=max_score, problems=problems_out
+        exam_title=exam.title,
+        total_score=total_score,
+        max_score=max_score,
+        problems=problems_out,
+        annulled=status["annulled"],
+        annul_reason=status["annul_reason"],
+        violations=status["violations"],
     )
 
 
@@ -725,6 +835,8 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
     for student in students:
         status = student_attempt_status_label(db, student, exam)
         status_counts[status] += 1
+        attempt = peek_attempt(db, student, exam)
+        annulled = attempt is not None and attempt.annulled_at is not None
 
         row_scores = []
         total = 0.0
@@ -732,8 +844,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
             # No crear un intento como efecto secundario de que el docente
             # mire el dashboard: si el estudiante no ha empezado, no hay
             # nada sorteado todavía para él/ella.
-            has_attempt = peek_attempt(db, student, exam) is not None
-            problems = resolve_exam_problems(db, student, exam) if has_attempt else [None] * num_slots
+            problems = resolve_exam_problems(db, student, exam) if attempt is not None else [None] * num_slots
         else:
             problems = exam.problems
 
@@ -743,6 +854,8 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 continue
             key = idx if is_random else problem.id
             _submission, score, checks_report = student_problem_result(db, student, problem)
+            if annulled:
+                score, checks_report = 0.0, []
             row_scores.append(score)
             total += score
             if status == "finished":
@@ -764,6 +877,8 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 max_score=max_score,
                 nota_5=nota_5,
                 problem_scores=row_scores,
+                annulled=annulled,
+                violations=(attempt.violations or 0) if attempt else 0,
             )
         )
         if status == "finished":
@@ -848,6 +963,7 @@ def _to_teacher_list_out(db: Session, exam: models.Exam) -> schemas.TeacherExamL
         description=exam.description,
         duration_minutes=exam.duration_minutes,
         is_open=exam.is_open,
+        max_violations=exam.max_violations or 0,
         total_students=dashboard.total_students,
         not_started=dashboard.not_started,
         in_progress=dashboard.in_progress,
@@ -1060,6 +1176,7 @@ def teacher_create_exam(
         duration_minutes=payload.duration_minutes,
         is_open=False,
         group=teacher.group,
+        max_violations=payload.max_violations,
     )
     db.add(exam)
     db.flush()
@@ -1184,11 +1301,18 @@ def teacher_student_submissions(
         total_score += score
         max_score += problem.max_score
 
+    # Vista del docente: se muestra el trabajo real de cada ejercicio (para
+    # poder evaluar una anulación dudosa), pero el total de un intento anulado es 0.
+    attempt = peek_attempt(db, student, exam)
+    annulled = attempt is not None and attempt.annulled_at is not None
     return schemas.ExamResultsOut(
         exam_title=f"{exam.title} — {student.full_name or student.email}",
-        total_score=total_score,
+        total_score=0.0 if annulled else total_score,
         max_score=max_score,
         problems=problems_out,
+        annulled=annulled,
+        annul_reason=attempt.annul_reason if annulled else None,
+        violations=(attempt.violations or 0) if attempt else 0,
     )
 
 
@@ -1214,7 +1338,7 @@ def teacher_export_xlsx(
     headers = ["Documento", "Apellidos y nombre", "Correo", "Estado"]
     for problem in dashboard.problems:
         headers.append(f"{problem.title} ({problem.max_score:.0f} pts)")
-    headers += ["Total", "Máximo", "Nota (0-5)"]
+    headers += ["Total", "Máximo", "Nota (0-5)", "Salidas de ventana"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -1226,11 +1350,12 @@ def teacher_export_xlsx(
                 row.documento,
                 row.full_name or "",
                 row.email,
-                status_labels.get(row.status, row.status),
+                "Anulado" if row.annulled else status_labels.get(row.status, row.status),
                 *row.problem_scores,
                 row.total_score,
                 row.max_score,
                 row.nota_5,
+                row.violations,
             ]
         )
 
@@ -1248,6 +1373,51 @@ def teacher_export_xlsx(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _get_group_student_or_404(db: Session, student_id: int, group: int) -> models.Student:
+    student = (
+        db.query(models.Student)
+        .filter(models.Student.id == student_id, models.Student.role == "student", models.Student.group == group)
+        .first()
+    )
+    if not student:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    return student
+
+
+@app.post("/api/teacher/students/{student_id}/release-session")
+def teacher_release_student_session(
+    student_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Cierra la sesión única de un estudiante del grupo del docente (PC
+    apagado, pestaña perdida...) para que pueda volver a ingresar de inmediato."""
+    student = _get_group_student_or_404(db, student_id, teacher.group)
+    student.session_id = None
+    student.last_seen = None
+    db.commit()
+    return {"released": True, "student_id": student.id}
+
+
+@app.post("/api/teacher/exams/{exam_id}/students/{student_id}/reinstate")
+def teacher_reinstate_attempt(
+    exam_id: int, student_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Revierte la anulación de un intento (falso positivo del control de
+    salidas de ventana). El intento sigue cerrado, pero se recalifica el
+    último código guardado y el estudiante recupera su nota real."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    student = _get_group_student_or_404(db, student_id, teacher.group)
+    attempt = peek_attempt(db, student, exam)
+    if attempt is None or attempt.annulled_at is None:
+        raise HTTPException(status_code=400, detail="Este intento no está anulado.")
+    attempt.annulled_at = None
+    attempt.annul_reason = None
+    attempt.violations = 0
+    attempt.violation_log = "[]"
+    db.commit()
+    _regrade_attempt(db, student, exam)
+    return {"reinstated": True, "student_id": student.id}
 
 
 # ---- Vistas de admin (gestión de cuentas docente, una por grupo) ----
@@ -1315,12 +1485,22 @@ def admin_delete_teacher(
 
 @app.get("/api/teacher/students", response_model=list[schemas.StudentRosterOut])
 def teacher_list_students(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
-    return (
+    students = (
         db.query(models.Student)
         .filter(models.Student.role == "student", models.Student.group == teacher.group)
         .order_by(models.Student.full_name)
         .all()
     )
+    return [
+        schemas.StudentRosterOut(
+            id=st.id,
+            full_name=st.full_name,
+            email=st.email,
+            documento=st.documento,
+            session_active=has_active_session(st),
+        )
+        for st in students
+    ]
 
 
 @app.post("/api/teacher/students", response_model=schemas.StudentRosterOut)

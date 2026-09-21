@@ -6,6 +6,10 @@ from datetime import datetime
 class LoginRequest(BaseModel):
     email: str
     password: str
+    # Identificador aleatorio guardado en el navegador; permite que un
+    # estudiante recupere su propia sesión (p. ej. cerró la pestaña) sin
+    # esperar a que venza la inactividad. Ver security.start_session.
+    device_id: Optional[str] = None
 
 
 class RegisterRequest(BaseModel):
@@ -41,6 +45,7 @@ class ExamOut(BaseModel):
     title: str
     description: Optional[str] = None
     duration_minutes: Optional[int] = None  # None = sin límite de tiempo
+    max_violations: int = 0  # 0 = sin control de salidas de ventana
     problems: list[ProblemOut]
 
     class Config:
@@ -64,6 +69,14 @@ class AttemptOut(BaseModel):
     duration_seconds: Optional[int] = None
     remaining_seconds: Optional[int] = None
     finished: bool
+    violations: int = 0
+    max_violations: int = 0
+    annulled: bool = False
+    annul_reason: Optional[str] = None
+
+
+class ViolationIn(BaseModel):
+    kind: str  # "hidden" | "blur" | "fullscreen_exit"
 
 
 class RunRequest(BaseModel):
@@ -111,6 +124,9 @@ class ExamResultsOut(BaseModel):
     total_score: float
     max_score: float
     problems: list[ProblemResultOut]
+    annulled: bool = False
+    annul_reason: Optional[str] = None
+    violations: int = 0
 
 
 # ---- Vistas de docente ----
@@ -122,6 +138,7 @@ class TeacherExamListOut(BaseModel):
     description: Optional[str] = None
     duration_minutes: Optional[int] = None
     is_open: bool = True
+    max_violations: int = 0
     total_students: int
     not_started: int
     in_progress: int
@@ -164,6 +181,8 @@ class StudentRowOut(BaseModel):
     max_score: float
     nota_5: float
     problem_scores: list[float]
+    annulled: bool = False
+    violations: int = 0
 
 
 class BankProblemOut(BaseModel):
@@ -231,6 +250,7 @@ class TeacherCreateExamIn(BaseModel):
     title: str
     description: Optional[str] = None
     duration_minutes: Optional[int] = None  # None = sin límite
+    max_violations: int = Field(default=0, ge=0, le=20)  # 0 = sin control de salidas de ventana
     slots: list[ExamSlotIn]
 
 
@@ -282,6 +302,7 @@ class StudentRosterOut(BaseModel):
     full_name: Optional[str] = None
     email: str
     documento: str
+    session_active: bool = False  # tiene una sesión abierta con actividad reciente
 
     class Config:
         from_attributes = True

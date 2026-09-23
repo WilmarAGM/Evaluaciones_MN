@@ -1,11 +1,22 @@
 import json
+import logging
 import math
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger(__name__)
+
+
+class SandboxUnavailableError(Exception):
+    """El contenedor ejecutor no respondió (red caída, contenedor
+    reiniciando, etc.) — esto NO es un error del código del estudiante, y
+    quien llame a run_student_code debe tratarlo distinto: nunca calificar
+    como si el estudiante hubiera fallado, ver 'infra_error' en el resultado."""
 
 RUN_TIMEOUT_SECONDS = 20
 RESULT_MARKER = "__EVAL_RESULT__"
@@ -415,21 +426,40 @@ def _build_runner(code: str, checks: list) -> str:
     return "\n".join(lines)
 
 
+SANDBOX_RETRY_ATTEMPTS = 2  # 1 intento + 1 reintento: absorbe un blip transitorio de red
+SANDBOX_RETRY_DELAY_SECONDS = 1.5
+
+
 def _run_in_sandbox_service(full_script: str) -> tuple[str, str]:
     """Envía el script ya ensamblado al contenedor ejecutor aislado (ver
     executor_service/server.py) y devuelve (stdout, stderr). El script corre
     ALLÁ, en un contenedor sin la base de datos montada, sin .env y sin red
-    a Internet — nunca en este proceso."""
+    a Internet — nunca en este proceso.
+
+    Reintenta una vez ante una falla de RED (no de red a Internet — sin ella
+    la petición ni siquiera se puede intentar en la red interna del docker,
+    esto es distinto): un blip momentáneo del contenedor ejecutor (p.ej.
+    reiniciando tras un despliegue) no debe costarle al estudiante su envío.
+    Si sigue sin responder, levanta SandboxUnavailableError — quien llama
+    (run_student_code) NUNCA debe traducir esto en una calificación de 0."""
     body = json.dumps({"script": full_script, "timeout": RUN_TIMEOUT_SECONDS}).encode("utf-8")
-    req = urllib.request.Request(
-        f"{EXECUTOR_SERVICE_URL}/run", data=body, headers={"Content-Type": "application/json"}, method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=RUN_TIMEOUT_SECONDS + 10) as resp:
-            payload = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return "", "El entorno de ejecución no respondió. Intenta de nuevo en unos segundos."
-    return payload.get("stdout", ""), payload.get("stderr", "")
+    last_error = None
+    for attempt in range(SANDBOX_RETRY_ATTEMPTS):
+        req = urllib.request.Request(
+            f"{EXECUTOR_SERVICE_URL}/run", data=body, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=RUN_TIMEOUT_SECONDS + 10) as resp:
+                payload = json.loads(resp.read())
+            return payload.get("stdout", ""), payload.get("stderr", "")
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
+            last_error = e
+            if attempt + 1 < SANDBOX_RETRY_ATTEMPTS:
+                logger.warning("sandbox no respondió (intento %d/%d), reintentando: %r",
+                                attempt + 1, SANDBOX_RETRY_ATTEMPTS, e)
+                time.sleep(SANDBOX_RETRY_DELAY_SECONDS)
+    logger.error("sandbox no respondió tras %d intentos: %r", SANDBOX_RETRY_ATTEMPTS, last_error)
+    raise SandboxUnavailableError(str(last_error))
 
 
 def _run_locally(full_script: str) -> tuple[str, str]:
@@ -470,11 +500,25 @@ def run_student_code(code: str, checks: list) -> dict:
         else:
             stdout, stderr = _run_locally(full_script)
     except subprocess.TimeoutExpired:
+        # El CÓDIGO del estudiante se demoró demasiado (bucle infinito, etc.)
+        # — esto sí es su resultado real: 0 en lo que dependía de que corriera.
         return {
             "stdout": "",
             "stderr": f"Tiempo de ejecución excedido ({RUN_TIMEOUT_SECONDS}s).",
             "checks": {},
             "figures": [],
+        }
+    except SandboxUnavailableError:
+        # La INFRAESTRUCTURA falló, no el código del estudiante — nunca debe
+        # traducirse en una calificación de 0. Quien llama (main.py) debe
+        # revisar 'infra_error' antes de persistir o mostrar esto como
+        # resultado del estudiante.
+        return {
+            "stdout": "",
+            "stderr": "El entorno de ejecución no respondió. Intenta ejecutar de nuevo en unos segundos.",
+            "checks": {},
+            "figures": [],
+            "infra_error": True,
         }
 
     payload = {}
@@ -490,6 +534,7 @@ def run_student_code(code: str, checks: list) -> dict:
         "stderr": stderr,
         "checks": payload.get("checks", {}),
         "figures": payload.get("figures", []),
+        "infra_error": False,
     }
 
 
@@ -512,6 +557,13 @@ def values_close(value, expected, tol) -> bool:
 
 
 def grade_submission(run_result: dict, problem) -> dict:
+    if run_result.get("infra_error"):
+        # El ejecutor no respondió: NO es que el estudiante haya sacado 0 en
+        # todo, es que no se pudo calificar. checks_report vacío en vez de
+        # una lista de "reprobado" — quien llama (main.py) debe revisar este
+        # campo antes de guardar/mostrar el resultado como si fuera real.
+        return {"total_score": 0.0, "checks_report": [], "infra_error": True}
+
     checks_cfg = json.loads(problem.rubric)
     results = run_result.get("checks", {})
 
@@ -539,7 +591,7 @@ def grade_submission(run_result: dict, problem) -> dict:
         total += points
         report.append({"label": c["label"], "passed": passed, "points": points, "max_points": max_points})
 
-    return {"total_score": total, "checks_report": report}
+    return {"total_score": total, "checks_report": report, "infra_error": False}
 
 
 def explain_check(c: dict, entry, passed: bool) -> str:

@@ -100,9 +100,16 @@ export default function ProblemCard({
       setSavedAt(new Date().toISOString());
       setDraftState("saved");
     } catch (err) {
+      // 503 = el entorno de ejecución (sandbox) no respondió: no es un error
+      // en el código del estudiante, así que se muestra distinto (aviso para
+      // reintentar, no como si su código estuviera mal) — ver
+      // _raise_if_infra_error en el backend.
+      const infraError = err.response?.status === 503;
       setOutput({
         stdout: "",
-        stderr: err.response?.data?.detail || "Error al ejecutar el código.",
+        stderr: infraError ? "" : err.response?.data?.detail || "Error al ejecutar el código.",
+        infraError,
+        infraMessage: infraError ? err.response?.data?.detail : null,
       });
     } finally {
       setRunning(false);
@@ -214,7 +221,24 @@ export default function ProblemCard({
         )}
       </div>
 
-      {output && (
+      {output?.infraError && (
+        <div className="px-6 py-4 border-t border-white/10 bg-amber-500/10">
+          <p className="text-sm text-amber-300 font-medium">⚠ No se pudo conectar con el entorno de ejecución</p>
+          <p className="text-sm text-amber-200/80 mt-1">
+            {output.infraMessage || "Intenta ejecutar de nuevo en unos segundos."} Esto no tiene que ver con tu
+            código — no perdiste tu última calificación guardada.
+          </p>
+          <button
+            onClick={handleRun}
+            disabled={running}
+            className="mt-3 rounded-lg border border-amber-400/40 text-amber-300 hover:bg-amber-500/10 transition text-sm font-medium px-3 py-1.5 disabled:opacity-60"
+          >
+            {running ? "Reintentando..." : "Reintentar"}
+          </button>
+        </div>
+      )}
+
+      {output && !output.infraError && (
         <div className="px-6 py-4 border-t border-white/10 bg-black/30">
           <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Salida</p>
           {output.stdout && (

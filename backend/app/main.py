@@ -1,13 +1,16 @@
 import io
 import json
+import logging
 import os
 import random
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Depends, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
@@ -32,9 +35,32 @@ from .security import (
 
 ALLOWED_EMAIL_DOMAIN = "@unal.edu.co"
 
+# INFO a stdout, que docker captura — así "docker logs evaluaciones-mn" ya
+# muestra los warnings/errors de infra_error, el healthcheck del ejecutor al
+# arrancar, y cualquier excepción no capturada (ver global_exception_handler),
+# sin necesidad de una base de datos ni un panel aparte para verlos.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Evaluaciones Métodos Numéricos - Local")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Red de seguridad final: cualquier excepción no capturada en un
+    endpoint (un bug real, no un HTTPException deliberado — esos los sigue
+    manejando FastAPI normalmente) se registra completa en los logs del
+    servidor, y al cliente se le responde un 500 genérico, nunca el
+    traceback ni el mensaje real de la excepción — eso podría filtrar
+    detalles internos (rutas, nombres de tablas, etc.)."""
+    logger.exception("Error no manejado en %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Ocurrió un error interno. Intenta de nuevo; si persiste, avísale a tu docente."},
+    )
+
 
 # Orígenes de desarrollo local siempre permitidos; el/los del frontend en
 # producción (ej. Vercel) se agregan vía CORS_ORIGINS (separados por coma),
@@ -48,6 +74,51 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _log_executor_connectivity():
+    """Solo informativo: prueba UNA vez, sin bloquear el arranque, si el
+    contenedor ejecutor responde. No se puede exigir que responda para
+    arrancar: docker-executor-setup.sh conecta este contenedor a la red
+    interna DESPUÉS de que arranca (necesita que el contenedor ya exista
+    para hacer `docker network connect`), así que en un despliegue normal
+    esta primera prueba puede fallar por timing, no por una falla real —
+    de ahí que solo quede un log, nunca un error de arranque. Sirve para
+    confirmar de inmediato en 'docker logs' si el cableado quedó mal."""
+    if not executor.EXECUTOR_SERVICE_URL:
+        logger.info("EXECUTOR_SERVICE_URL no configurada (modo desarrollo local sin sandbox).")
+        return
+    try:
+        req = urllib.request.Request(f"{executor.EXECUTOR_SERVICE_URL}/health")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+        logger.info("Ejecutor aislado respondió OK en %s.", executor.EXECUTOR_SERVICE_URL)
+    except Exception as e:
+        logger.warning(
+            "Ejecutor aislado (%s) no respondió al arrancar (%r). Si esto persiste tras conectar la red "
+            "(docker-executor-setup.sh) y unos segundos, revisa el contenedor evaluaciones-executor — "
+            "GET /api/health en esta API confirma el estado en cualquier momento.",
+            executor.EXECUTOR_SERVICE_URL, e,
+        )
+
+
+@app.get("/api/health")
+def health_check():
+    """Estado en vivo de la API y del ejecutor aislado — para confirmar en
+    cualquier momento (no solo al arrancar) que el sandbox está bien
+    conectado, sin tener que hacerlo a mano con docker exec. Sin
+    autenticación a propósito: es solo un semáforo operativo, no expone
+    datos."""
+    if not executor.EXECUTOR_SERVICE_URL:
+        return {"api": "ok", "executor": "not_configured"}
+    try:
+        req = urllib.request.Request(f"{executor.EXECUTOR_SERVICE_URL}/health")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+        return {"api": "ok", "executor": "ok"}
+    except Exception:
+        return {"api": "ok", "executor": "unreachable"}
 
 
 def now():
@@ -559,11 +630,35 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
 
 
 def _persist_submission(db: Session, student: models.Student, problem: models.Problem, code: str, result: dict, grading: dict) -> models.Submission:
+    """Guarda código + calificación. Si `result`/`grading` traen infra_error
+    (el ejecutor no respondió, ver executor.SandboxUnavailableError), NO
+    toca la fila existente: sobrescribir con stdout/stderr/nota vacíos
+    borraría el último resultado real del estudiante por una falla de
+    infraestructura que no fue su culpa. Los llamadores (run_code, save_code,
+    _regrade_attempt) deben avisarle al usuario que reintente; esta función
+    es la última línea de defensa por si algún llamador futuro olvida
+    revisarlo antes."""
     submission = (
         db.query(models.Submission)
         .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
         .first()
     )
+    if result.get("infra_error") or grading.get("infra_error"):
+        logger.warning(
+            "infra_error al calificar: student_id=%s problem_id=%s — no se sobrescribió la entrega existente",
+            student.id, problem.id,
+        )
+        if submission is not None:
+            return submission
+        # Sin entrega previa que proteger: se guarda el código (para no
+        # perder lo que escribió) pero SIN calificación, para que quede
+        # claro que 0 aquí significa "no se pudo calificar", no "está mal".
+        submission = models.Submission(student_id=student.id, problem_id=problem.id, code=code)
+        db.add(submission)
+        db.commit()
+        db.refresh(submission)
+        return submission
+
     if not submission:
         submission = models.Submission(student_id=student.id, problem_id=problem.id, code=code)
         db.add(submission)
@@ -578,6 +673,20 @@ def _persist_submission(db: Session, student: models.Student, problem: models.Pr
     return submission
 
 
+def _raise_if_infra_error(result: dict):
+    """Usado por los endpoints que ejecutan código (run/save/teacher_run):
+    si el ejecutor no respondió (ver executor.SandboxUnavailableError), esto
+    NUNCA debe llegar al estudiante como "tu código sacó 0" — se corta acá
+    con un 503 claro, ANTES de persistir nada, para que el frontend sepa que
+    debe reintentar en vez de mostrar una calificación falsa."""
+    if result.get("infra_error"):
+        raise HTTPException(
+            status_code=503,
+            detail="El entorno de ejecución no respondió. Intenta ejecutar de nuevo en unos segundos; "
+            "tu código y tu última calificación guardada NO se perdieron.",
+        )
+
+
 def _regrade_attempt(db: Session, student: models.Student, exam: models.Exam) -> None:
     """Vuelve a ejecutar y calificar el último código GUARDADO (submission.code)
     de cada problema del examen, una sola vez, justo al cerrarse el intento
@@ -588,7 +697,13 @@ def _regrade_attempt(db: Session, student: models.Student, exam: models.Exam) ->
     antes de que se acabe el tiempo, el texto queda guardado pero el
     total_score/checks_report se quedan de la ejecución anterior (o vacíos si
     nunca ejecutó nada) — sin este cierre, el puntaje final no reflejaría lo
-    último que el estudiante realmente escribió."""
+    último que el estudiante realmente escribió.
+
+    Si el ejecutor no responde para alguno de los problemas (infra_error),
+    ese problema se salta SIN sobrescribir su calificación anterior (ver
+    _persist_submission) y queda un log claro — el resto de problemas del
+    examen se recalifican con normalidad; esto no debe tumbar el cierre del
+    intento (el estudiante igual necesita poder finalizar)."""
     for problem in resolve_exam_problems(db, student, exam):
         submission = (
             db.query(models.Submission)
@@ -599,6 +714,12 @@ def _regrade_attempt(db: Session, student: models.Student, exam: models.Exam) ->
             continue
         result = run_problem_code(submission.code, problem)
         grading = executor.grade_submission(result, problem)
+        if result.get("infra_error"):
+            logger.error(
+                "regrade con infra_error al cerrar intento: student_id=%s exam_id=%s problem_id=%s "
+                "— se conservó su última calificación guardada, revisar manualmente",
+                student.id, exam.id, problem.id,
+            )
         _persist_submission(db, student, problem, submission.code, result, grading)
 
 
@@ -614,6 +735,7 @@ def run_code(
     require_active_attempt(db, student, exam)
 
     result = run_problem_code(payload.code, problem)
+    _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
     # Ejecutar también guarda: antes solo el botón manual "Guardar respuesta"
     # (POST /save) persistía en la base de datos, así que si el estudiante
@@ -667,6 +789,7 @@ def save_code(
     require_active_attempt(db, student, exam)
 
     result = run_problem_code(payload.code, problem)
+    _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
     submission = _persist_submission(db, student, problem, payload.code, result, grading)
 
@@ -752,6 +875,7 @@ def teacher_run_code(
 ):
     problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     result = run_problem_code(payload.code, problem)
+    _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
     return schemas.RunResult(
         stdout=result["stdout"],
@@ -776,6 +900,7 @@ def teacher_save_code(
     role == 'student'), para que pueda retomar la previsualización después."""
     problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
     result = run_problem_code(payload.code, problem)
+    _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
 
     submission = (

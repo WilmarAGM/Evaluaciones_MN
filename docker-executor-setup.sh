@@ -30,11 +30,23 @@ fi
 if docker inspect "$EXECUTOR" >/dev/null 2>&1; then
     docker rm -f "$EXECUTOR" >/dev/null
 fi
+
+# Tope de memoria del contenedor: 60% de la RAM total de la máquina, con un
+# techo de 3g (no hace falta más incluso en máquinas grandes) y un piso de
+# 1g (por debajo de eso, solo importar numpy+scipy+sympy+matplotlib ya fallla
+# — medido). En una VM chica (p.ej. 3.8GB) un 3g fijo casi no deja margen
+# para el contenedor de la API, el SO y cloudflared.
+TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+EXECUTOR_MEM_MB=$(( TOTAL_MEM_KB * 60 / 100 / 1024 ))
+[ "$EXECUTOR_MEM_MB" -gt 3072 ] && EXECUTOR_MEM_MB=3072
+[ "$EXECUTOR_MEM_MB" -lt 1024 ] && EXECUTOR_MEM_MB=1024
+echo "Memoria total de la máquina: $((TOTAL_MEM_KB / 1024))MB -> límite del ejecutor: ${EXECUTOR_MEM_MB}MB"
+
 docker run -d --name "$EXECUTOR" \
     --network "$NETWORK" \
     --init \
     --restart unless-stopped \
-    --memory 3g \
+    --memory "${EXECUTOR_MEM_MB}m" \
     --pids-limit 1024 \
     --read-only \
     --tmpfs /tmp:rw,size=256m \

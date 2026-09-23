@@ -71,6 +71,12 @@ class _VariableSpec(BaseModel):
     name: str
     description: str
     suggested_points: float
+    # True si el valor final esperado es un vector o una matriz (p.ej. la
+    # solución de un sistema lineal, o una matriz de iteración de Jacobi/
+    # Gauss-Seidel/SOR) en vez de un número suelto. build_and_validate_rubric
+    # compara estas variable por componente (ver executor._values_close), en
+    # vez de forzarlas a float().
+    is_matrix: bool = False
 
 
 class _ProblemDraft(BaseModel):
@@ -87,6 +93,11 @@ class _ProblemDraft(BaseModel):
     # solución del agente 2).
     reference_answer: float | None = None
     reference_variable: str | None = None
+    # True si el enunciado original pide explícitamente graficar (p.ej.
+    # "grafique f y determine cuántos ceros tiene") — agrega un check "plot"
+    # (¿el estudiante dejó al menos una figura de matplotlib abierta?) a la
+    # rúbrica. No compara la gráfica contra una referencia, solo que exista.
+    requires_plot: bool = False
 
 
 class _SkippedExercise(BaseModel):
@@ -126,6 +137,14 @@ class _Agent3Output(BaseModel):
     final_value_points: list[_VariablePoints]
     function_checks: list[_FunctionCheckSpec]
     call_checks: list[_CallCheckSpec]
+    # Rutinas alternativas que resolverían el problema COMPLETO sin pasar por
+    # el método que pide el enunciado (p.ej. si se exige bisect, bloquear
+    # brentq/fsolve/sympy.nsolve) — se deshabilitan (lanzan RuntimeError si se
+    # llaman) para que "llamar la rutina exigida de adorno y calcular la
+    # respuesta real por otro camino" ya no pueda dar el puntaje completo.
+    # NUNCA incluir aquí sympy.lambdify ni sympy.diff/factor/simplify: son
+    # pasos analíticos legítimos, no atajos numéricos.
+    blocked_qualnames: list[str] = []
 
 
 class _Agent4Output(BaseModel):
@@ -222,6 +241,18 @@ SUPPORTED_METHODS_TABLE = """MÉTODOS SOPORTADOS (con su rutina real de numpy/sc
   - Newton modificado (para raíces de multiplicidad >1) -> scipy.optimize.newton (con fprime y fprime2)
 - Sistemas de ecuaciones NO lineales:
   - Newton para sistemas (dado el jacobiano) -> scipy.optimize.fsolve (con fprime=jacobiano) o scipy.optimize.root(..., jac=jacobiano, method="hybr")
+- Sistemas de ecuaciones lineales:
+  - Solución directa -> scipy.linalg.solve
+  - Jacobi / Gauss-Seidel / SOR -> SOLO se pregunta por su MATRIZ DE ITERACIÓN T (no hay rutina de \
+scipy que itere con estos métodos: scipy solo trae solvers de Krylov como cg/gmres, que son \
+algoritmos distintos). No generes un problema que pida "resuelva el sistema iterando con Jacobi/GS/ \
+SOR" ni que pida contar iteraciones de convergencia de estos métodos — eso sigue sin tener rutina \
+real. Sí se puede pedir "construya y reporte la matriz de iteración T de Jacobi/Gauss-Seidel/SOR", \
+calculada con numpy a partir de la descomposición A=D-L-U (D diagonal, L y U triangulares con signo \
+negativo): T_jacobi = D⁻¹(L+U); T_gauss_seidel = (D-L)⁻¹U; T_sor = (D-ωL)⁻¹((1-ω)D+ωU). Esa variable \
+es una matriz (is_matrix=true en variables_to_check), no hay una única "rutina" que llamar (se \
+construye con numpy.diag/tril/triu/linalg.inv), así que estos problemas pueden llevar call_checks \
+vacío si de verdad no hay una llamada identificable — no fuerces uno.
 - Interpolación:
   - Lagrange -> scipy.interpolate.lagrange
   - Diferencias divididas de Newton -> scipy.interpolate.KroghInterpolator
@@ -237,7 +268,7 @@ SUPPORTED_METHODS_TABLE = """MÉTODOS SOPORTADOS (con su rutina real de numpy/sc
   - Diferencias finitas -> construir el sistema tridiagonal/banda a mano y resolverlo con scipy.linalg.solve_banded o numpy.linalg.solve
 
 MÉTODOS NO SOPORTADOS (sin rutina real en numpy/scipy/scikit-learn — NUNCA generes un problema para un numeral que pida alguno de estos; ver regla de omisión):
-- Métodos iterativos para sistemas lineales: Jacobi, Gauss-Seidel, SOR (scipy solo trae solvers de Krylov como cg/gmres, que son algoritmos distintos, no estos).
+- Jacobi, Gauss-Seidel, SOR pidiendo RESOLVER el sistema iterando (contar iteraciones, ver convergencia, obtener la solución x) — sin rutina real; solo su matriz de iteración T es calificable (ver arriba).
 - Ecuaciones diferenciales con valores iniciales (PVI), individuales o en sistemas, con método de PASO FIJO: Euler, Euler modificado, Taylor, Runge-Kutta de orden 2/3/4 clásico. scipy.integrate.solve_ivp solo implementa métodos ADAPTATIVOS (RK45, RK23, etc.), no estos de paso fijo h constante que pide el enunciado."""
 
 
@@ -272,6 +303,22 @@ SIN mencionar en esa lista qué rutina específica de scipy/numpy/sklearn se usa
 "30 pts — valor final correcto", "20 pts — usar la rutina numérica apropiada para el método pedido").
   - Mencionar los nombres EXACTOS de las variables donde debe guardarse cada resultado (deben \
 coincidir con starter_code y variables_to_check).
+- requires_plot: true si el enunciado original pide explícitamente graficar (p.ej. "grafique f en \
+[a,b]", "muestre gráficamente que..."), aunque sea como paso previo a otra pregunta (p.ej. "grafique \
+f y determine cuántos ceros tiene"). No lo marques true solo porque graficar ayudaría; solo si el \
+enunciado lo pide con esas palabras.
+- "Determine cuántos ceros/raíces/puntos fijos tiene f" (sin pedir localizarlos todos con el método \
+numérico) SÍ es una pregunta legítima con resultado numérico: agrega una variable_to_check tipo \
+"numero_de_raices" (un entero) — el agente 2 la calculará escaneando la función, no hace falta que \
+el enunciado revele cómo contar.
+- Una variable cuyo valor esperado es un vector o una matriz (la solución de un sistema, una matriz \
+de iteración de Jacobi/Gauss-Seidel/SOR, etc.) lleva is_matrix=true en variables_to_check y su \
+description debe decir la forma esperada (p.ej. "vector de 3 componentes", "matriz 3x3").
+- sympy SÍ está disponible para el estudiante como herramienta de pasos analíticos (derivar, \
+factorizar, simplificar, y luego sympy.lambdify para volver la expresión numérica) — esto no es un \
+atajo para resolver el problema, así que puede mencionarse en el enunciado como una forma válida de \
+llegar a definir la función que luego se le pasa al método numérico exigido. No la reveles como LA \
+forma de resolver el problema completo (el método numérico exigido sigue siendo obligatorio).
 - El enunciado SÍ debe decir explícitamente qué método/algoritmo numérico usar y sus parámetros \
 (p.ej. "usa la regla de Simpson con 140 subintervalos", "resuelve con Runge-Kutta de orden 4", \
 "usa cuadratura Gaussiana con 3 nodos", "usa el método de disparo") — eso no es lo que se evalúa, \
@@ -447,9 +494,28 @@ ni uses una función que no exista en estas bibliotecas):
 
 """ + SUPPORTED_METHODS_TABLE + """
 
+- sympy está disponible y es una forma válida de llegar a la función que se le pasa al método \
+numérico exigido: puedes definir la expresión simbólicamente (derivar, factorizar, simplificar con \
+sympy) y convertirla a una función numérica con sympy.lambdify(variable, expr, "numpy") antes de \
+pasarla a la rutina de scipy exigida. sympy NUNCA reemplaza esa rutina (nunca uses sympy.solve ni \
+sympy.nsolve como LA forma de resolver el problema; solo como paso previo para definir la función).
+- Si una variable pedida es "número de raíces/ceros/puntos fijos" (un conteo, no la lista de \
+valores), calcúlalo escaneando la función en una malla fina del dominio dado (p.ej. \
+`np.linspace(a, b, 2000)`) y contando cambios de signo consecutivos de f (para raíces) o de g(x)-x \
+(para puntos fijos de g) — NO uses una rutina de biblioteca para esto, es una cuenta directa.
+- Si una variable pedida es una matriz de iteración de Jacobi/Gauss-Seidel/SOR (is_matrix=true), \
+constrúyela con numpy a partir de A=D-L-U, usando EXACTAMENTE estas fórmulas (D=np.diag(np.diag(A)), \
+L=-np.tril(A,-1), U=-np.triu(A,1)): T_jacobi = np.linalg.inv(D) @ (L+U); \
+T_gauss_seidel = np.linalg.inv(D-L) @ U; T_sor = np.linalg.inv(D-omega*L) @ ((1-omega)*D+omega*U). No \
+inventes otra convención de signos para L/U: con esta, A = D-L-U y las fórmulas de arriba son las \
+matrices de iteración estándar.
+- Si el problema tiene requires_plot=true, incluye también código que genere al menos una figura de \
+matplotlib (`import matplotlib.pyplot as plt; plt.plot(...)`) de la función relevante — no hace \
+falta llamar a plt.show() ni cerrarla.
 - El código debe ser autocontenido: incluye todos los imports que uses.
-- Debe definir EXACTAMENTE las variables pedidas, con esos mismos nombres, como valores numéricos \
-(float o algo convertible a float con float(...)).
+- Debe definir EXACTAMENTE las variables pedidas, con esos mismos nombres. Una variable normal debe \
+ser un valor numérico (float o algo convertible a float con float(...)); una variable con \
+is_matrix=true debe ser un numpy.ndarray (vector o matriz) o una lista anidada de números.
 - No debe leer archivos, pedir input(), ni imprimir nada imprescindible para el resultado.
 - Responde ÚNICAMENTE con el código Python, sin explicación y sin bloques de markdown."""
 
@@ -458,7 +524,8 @@ def agent2_generate_solution(problem: dict, previous_error: str | None = None) -
     prompt = (
         f"Enunciado:\n{problem['statement_md']}\n\n"
         f"Código inicial (variables a definir):\n{problem['starter_code']}\n\n"
-        f"Variables a calcular: {json.dumps(problem['variables_to_check'], ensure_ascii=False)}"
+        f"Variables a calcular: {json.dumps(problem['variables_to_check'], ensure_ascii=False)}\n\n"
+        f"requires_plot: {problem.get('requires_plot', False)}"
     )
     if previous_error:
         prompt += f"\n\nUn intento anterior falló al ejecutarse con este error; corrígelo:\n{previous_error}"
@@ -493,19 +560,36 @@ equivalente al cuerpo de esa función en la solución de referencia — debe pod
 `eval()` usando solo esos nombres y funciones de math/numpy), y test_points (4-8 puntos donde \
 probarla, cada uno una lista con un valor por argumento).
 
-3. "call_checks": OBLIGATORIO al menos 1 (hasta 2) — la solución de referencia SIEMPRE debe llamar \
-una función concreta de numpy/scipy/sklearn que implemente el método numérico pedido (p.ej. \
-"scipy.integrate.quad", "scipy.optimize.brentq", "numpy.linalg.solve", "scipy.integrate.solve_ivp"); \
-da su nombre calificado EXACTO tal como aparece importado/llamado en la solución. Esta lista solo \
-puede ir vacía si de verdad no encuentras ninguna llamada identificable en el código recibido (algo \
-que no debería pasar, porque el enunciado exige usar una rutina de biblioteca).
+3. "call_checks": la solución de referencia debe llamar una función concreta de numpy/scipy/sklearn \
+que implemente el método numérico pedido (p.ej. "scipy.integrate.quad", "scipy.optimize.brentq", \
+"numpy.linalg.solve", "scipy.integrate.solve_ivp"); da su nombre calificado EXACTO tal como aparece \
+importado/llamado en la solución. OBLIGATORIO al menos 1 (hasta 2), EXCEPTO cuando el problema pide \
+construir una matriz de iteración de Jacobi/Gauss-Seidel/SOR: ahí se construye con numpy.diag/tril/ \
+triu/linalg.inv (no hay una única rutina que la resuelva), así que call_checks puede ir vacío.
+
+4. "blocked_qualnames": rutinas que, si el estudiante las llama, resolverían el problema COMPLETO \
+sin usar el método que pide el enunciado — deshabilítalas (el estudiante ve un error si las llama) \
+para que "llamar la rutina exigida una vez, de adorno, y calcular la respuesta real por otro camino" \
+ya no dé puntaje completo. Guíate por el método pedido:
+   - Si se exige bisección: bloquea scipy.optimize.brentq, scipy.optimize.newton, \
+scipy.optimize.fsolve, scipy.optimize.root_scalar, scipy.optimize.ridder, sympy.nsolve, sympy.solve.
+   - Si se exige punto fijo (fixed_point): bloquea scipy.optimize.bisect, scipy.optimize.brentq, \
+scipy.optimize.fsolve, scipy.optimize.newton, sympy.nsolve, sympy.solve — SALVO que el propio \
+enunciado pida explícitamente comparar fixed_point con bisect (en ese caso no bloquees bisect).
+   - Si se exige un sistema no lineal con Newton/fsolve: bloquea scipy.optimize.root con otro \
+método, sympy.solve, sympy.nsolve.
+   - Para integración, interpolación, regresión, EDOs o sistemas lineales: normalmente no hace \
+falta bloquear nada (no hay una alternativa de una línea que trivialice el problema); deja la lista \
+vacía si no la hay.
+   - NUNCA bloquees sympy.lambdify, sympy.diff, sympy.factor, sympy.simplify, ni la creación de \
+símbolos (sympy.Symbol): son pasos analíticos legítimos, no atajos numéricos.
 
 Si la solución de referencia no define ninguna función matemática propia, function_checks puede ir \
-vacía — pero call_checks debe llevar siempre al menos un chequeo.
+vacía. blocked_qualnames puede ir vacía si de verdad no aplica.
 
 Reparto de puntos sugerido sobre 100: ~55-65% en final_value_points (la respuesta correcta), \
-~35-45% repartido entre function_checks y call_checks (el procedimiento). Nunca dejes call_checks \
-vacío.
+~35-45% repartido entre function_checks y call_checks (el procedimiento). blocked_qualnames no lleva \
+puntos propios (es una restricción, no un chequeo puntuado).
 
 Responde ÚNICAMENTE con JSON válido, exactamente con esta forma:
 {
@@ -516,7 +600,8 @@ Responde ÚNICAMENTE con JSON válido, exactamente con esta forma:
   ],
   "call_checks": [
     {"label": "string", "qualname": "modulo.submodulo.funcion", "points": 20}
-  ]
+  ],
+  "blocked_qualnames": ["scipy.optimize.brentq", "sympy.nsolve"]
 }"""
 
 
@@ -579,6 +664,7 @@ def build_and_validate_rubric(problem: dict, solution_code: str, rubric_proposal
                 "expected": 0.0,  # se sobreescribe abajo con el valor real
                 "tolerance": 1e-4,
                 "points": points,
+                "_is_matrix": bool(v.get("is_matrix")),  # se limpia antes de guardar, ver abajo
             }
         )
 
@@ -591,12 +677,22 @@ def build_and_validate_rubric(problem: dict, solution_code: str, rubric_proposal
         entry = results.get(c["id"], {})
         if "error" in entry or entry.get("value") is None:
             raise RuntimeError(f"la solución no definió la variable '{c['variable']}': {entry.get('error', 'sin valor')}")
-        try:
-            value = float(entry["value"])
-        except (TypeError, ValueError):
-            raise RuntimeError(f"la variable '{c['variable']}' no es numérica: {entry['value']!r}")
-        c["expected"] = value
-        c["tolerance"] = max(abs(value) * 1e-4, 1e-6)
+        raw = entry["value"]
+        if c.pop("_is_matrix"):
+            # Vector/matriz: ya llega como lista (anidada si es 2D) desde el
+            # ejecutor (numpy .tolist()); se guarda tal cual y se compara por
+            # componente (ver executor.values_close), no se fuerza a float().
+            if not isinstance(raw, (list, tuple)):
+                raise RuntimeError(f"la variable '{c['variable']}' debía ser un vector/matriz y no lo es: {raw!r}")
+            c["expected"] = raw
+            c["tolerance"] = 1e-4
+        else:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise RuntimeError(f"la variable '{c['variable']}' no es numérica: {raw!r}")
+            c["expected"] = value
+            c["tolerance"] = max(abs(value) * 1e-4, 1e-6)
 
     base_result = executor.run_student_code(solution_code, checks)
     base_graded = executor.grade_submission(base_result, _FakeProblem(checks))
@@ -648,12 +744,50 @@ def build_and_validate_rubric(problem: dict, solution_code: str, rubric_proposal
         if graded["total_score"] >= sum(x["points"] for x in candidate) - 1e-6:
             accepted_process_checks.append(candidate[-1])
 
+    plot_warning = None
+    if problem.get("requires_plot"):
+        candidate = checks + accepted_process_checks + [
+            {"id": "plot", "type": "plot", "label": "Generar la gráfica pedida", "min_figures": 1, "points": 10}
+        ]
+        result = executor.run_student_code(solution_code, candidate)
+        graded = executor.grade_submission(result, _FakeProblem(candidate))
+        if graded["total_score"] >= sum(x["points"] for x in candidate) - 1e-6:
+            accepted_process_checks.append(candidate[-1])
+        else:
+            # El enunciado pedía graficar pero la solución de referencia no
+            # dejó ninguna figura abierta: probable descuido del agente 2, no
+            # algo que deba tumbar el problema (el resto de la rúbrica ya
+            # validó 100/100), pero el docente debe saberlo al revisar.
+            plot_warning = (
+                "el enunciado pide graficar (requires_plot) pero la solución de referencia no generó "
+                "ninguna figura de matplotlib; no se agregó el chequeo de gráfica"
+            )
+
+    # blocked_qualnames: se agregan TODOS juntos en un solo check (sin puntos
+    # propios) y se validan de una vez — si alguno rompe la solución de
+    # referencia (o sea, ella misma necesitaba esa rutina, y el agente 3 se
+    # equivocó al proponer bloquearla), se descarta el bloqueo COMPLETO en
+    # vez de intentar aislar cuál sobraba: es más seguro no bloquear nada que
+    # bloquear la rutina que la propia referencia necesita.
+    blocked = [q for q in (rubric_proposal.get("blocked_qualnames") or []) if q]
+    if blocked:
+        candidate = checks + accepted_process_checks + [
+            {"type": "blocked_call", "qualnames": blocked, "points": 0}
+        ]
+        result = executor.run_student_code(solution_code, candidate)
+        graded = executor.grade_submission(result, _FakeProblem(candidate))
+        expected_total = sum(x["points"] for x in checks + accepted_process_checks)
+        if graded["total_score"] >= expected_total - 1e-6:
+            accepted_process_checks.append(candidate[-1])
+
     process_warning = None
     if not accepted_process_checks:
         process_warning = (
-            "no se pudo validar ningún chequeo de procedimiento (función/llamada) para este problema; "
-            "la rúbrica quedó evaluando solo el resultado final, no el método usado para llegar a él"
+            "no se pudo validar ningún chequeo de procedimiento (función/llamada/gráfica) para este "
+            "problema; la rúbrica quedó evaluando solo el resultado final, no el método usado para llegar a él"
         )
+    if plot_warning:
+        process_warning = f"{process_warning}\n{plot_warning}" if process_warning else plot_warning
 
     final_checks = checks + accepted_process_checks
     _normalize_points(final_checks)
@@ -667,16 +801,22 @@ def _normalize_points(checks: list[dict], target_total: float = 100.0) -> None:
     validación (algunos se descartan en silencio, ver build_and_validate_rubric)
     y del reparto que haya propuesto el agente 3, que no siempre suma 100 —
     causa típica de que el puntaje calificado no coincidiera con el "100
-    puntos" anunciado en el enunciado."""
-    total = sum(c["points"] for c in checks)
+    puntos" anunciado en el enunciado.
+
+    "blocked_call" queda SIEMPRE en 0 (no es un criterio puntuado, ver
+    grade_submission) y nunca recibe el ajuste de redondeo por arrastre: si
+    quedara de último en la lista y se le sumara el arrastre, tendría puntos
+    que max_score contaría pero que nunca se pueden ganar de verdad."""
+    scoreable = [c for c in checks if c["type"] != "blocked_call"]
+    total = sum(c["points"] for c in scoreable)
     if total <= 0:
         return
     scale = target_total / total
-    for c in checks:
+    for c in scoreable:
         c["points"] = round(c["points"] * scale, 1)
-    drift = round(target_total - sum(c["points"] for c in checks), 1)
+    drift = round(target_total - sum(c["points"] for c in scoreable), 1)
     if drift:
-        checks[-1]["points"] = round(checks[-1]["points"] + drift, 1)
+        scoreable[-1]["points"] = round(scoreable[-1]["points"] + drift, 1)
 
 
 def check_reference_answer(problem: dict, rubric: list[dict]) -> str | None:
@@ -721,6 +861,8 @@ def _replace_grading_section(statement_md: str, rubric: list[dict]) -> str:
     """
     lines = ["### Calificación (100 puntos)"]
     for c in rubric:
+        if c["type"] == "blocked_call":
+            continue  # sin label ni puntos propios: no es un criterio que mostrarle al estudiante
         lines.append(f"- {c['points']:g} pts — {c['label']}")
     section = "\n".join(lines)
 

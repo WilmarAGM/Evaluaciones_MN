@@ -493,7 +493,7 @@ def run_student_code(code: str, checks: list) -> dict:
     }
 
 
-def _values_close(value, expected, tol) -> bool:
+def values_close(value, expected, tol) -> bool:
     """Como math.isclose, pero también acepta vectores/matrices (listas
     anidadas) para poder calificar una respuesta final como scipy.linalg.solve
     o una matriz de iteración de Jacobi/Gauss-Seidel/SOR, no solo un escalar.
@@ -504,7 +504,7 @@ def _values_close(value, expected, tol) -> bool:
             return False
         if len(value) != len(expected):
             return False
-        return all(_values_close(v, e, tol) for v, e in zip(value, expected))
+        return all(values_close(v, e, tol) for v, e in zip(value, expected))
     try:
         return math.isclose(value, expected, abs_tol=tol)
     except TypeError:
@@ -528,7 +528,7 @@ def grade_submission(run_result: dict, problem) -> dict:
             value = entry.get("value")
             passed = False
             if value is not None and "error" not in entry:
-                passed = _values_close(value, c["expected"], c.get("tolerance", 1e-4))
+                passed = values_close(value, c["expected"], c.get("tolerance", 1e-4))
         else:
             # "function"/"call" ahora llegan como dicts ({'passed': ..., ...detalle})
             # para poder explicar el porqué; el bool a secas se sigue aceptando

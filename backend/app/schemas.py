@@ -90,6 +90,7 @@ class RunResult(BaseModel):
     total_score: float = 0.0
     max_score: float = 0.0
     solution_code: Optional[str] = None
+    figures: list[str] = []  # PNGs en base64 (sin el prefijo data:image/...), una por figura de matplotlib
 
 
 class SaveResult(BaseModel):

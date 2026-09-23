@@ -7,6 +7,7 @@ cd /app/backend
 # modelo nuevo). Si la BD aún no existe o le faltan tablas, no hacen nada.
 python -m app.migrate_attempt_problems /app/data/evaluaciones.db
 python -m app.migrate_session_proctoring /app/data/evaluaciones.db
+python -m app.migrate_fix_untimed_exams /app/data/evaluaciones.db
 
 # Idempotente: cada función de seed ya verifica si el dato existe antes de crearlo.
 python -m app.seed
@@ -14,5 +15,6 @@ python -m app.seed
 # estudiantes que el admin/docente borró. Los rosters se cargan con el .xlsx del docente.
 python -m app.seed_taller
 python -m app.seed_parcial2
+python -m app.seed_taller_raices
 
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

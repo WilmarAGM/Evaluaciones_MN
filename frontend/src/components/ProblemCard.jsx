@@ -223,7 +223,25 @@ export default function ProblemCard({
           {output.stderr && (
             <pre className="text-sm text-rose-400 font-mono whitespace-pre-wrap mt-2">{output.stderr}</pre>
           )}
-          {!output.stdout && !output.stderr && <p className="text-sm text-slate-500 italic">Sin salida.</p>}
+          {!output.stdout && !output.stderr && (!output.figures || output.figures.length === 0) && (
+            <p className="text-sm text-slate-500 italic">Sin salida.</p>
+          )}
+        </div>
+      )}
+
+      {output?.figures && output.figures.length > 0 && (
+        <div className="px-6 py-4 border-t border-white/10 bg-black/20 space-y-3">
+          <p className="text-xs uppercase tracking-wide text-slate-500">
+            {output.figures.length > 1 ? "Gráficas" : "Gráfica"}
+          </p>
+          {output.figures.map((png, i) => (
+            <img
+              key={i}
+              src={`data:image/png;base64,${png}`}
+              alt={`Gráfica ${i + 1} generada por tu código`}
+              className="max-w-full rounded-lg border border-white/10 bg-white"
+            />
+          ))}
         </div>
       )}
 

@@ -4,9 +4,19 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 
 RUN_TIMEOUT_SECONDS = 20
 RESULT_MARKER = "__EVAL_RESULT__"
+
+# En producción (Docker) esto apunta al contenedor ejecutor aislado —sin la
+# base de datos montada, sin .env, sin red a Internet— y el código del
+# estudiante corre AHÍ, no en este proceso. Sin esta variable (dev local con
+# `venv`, sin el contenedor ejecutor levantado) se cae al subproceso local de
+# siempre, dejando claro en el docstring de run_student_code que ese modo no
+# aísla nada y no debe usarse con estudiantes reales.
+EXECUTOR_SERVICE_URL = os.environ.get("EXECUTOR_SERVICE_URL")
 
 # Carpeta con las rutinas propias del curso (Euler.py, RK4_sist.py, Poisson.py, ...)
 # Se agrega al sys.path del subproceso para que el estudiante pueda hacer
@@ -47,6 +57,28 @@ def __patch(__qualname):
     __INSTRUMENTED_NAMES__.add(__func_name)
 
 
+def __make_blocker(__qualname, __message):
+    def __blocker(*args, **kwargs):
+        raise RuntimeError(__message)
+    return __blocker
+
+
+# Deshabilita __qualname en este problema: cualquier llamada lanza un
+# RuntimeError con __message en vez de ejecutarse. NO se usa un docstring
+# aquí (comillas triples): este código vive dentro del propio string HELPERS,
+# delimitado con comillas triples, y unas comillas triples anidadas lo
+# cerrarían antes de tiempo.
+def __block(__qualname, __message):
+    __parts = __qualname.split(".")
+    __module_path, __func_name = ".".join(__parts[:-1]), __parts[-1]
+    try:
+        __module = __importlib.import_module(__module_path)
+    except Exception:
+        return
+    setattr(__module, __func_name, __make_blocker(__qualname, __message))
+    __INSTRUMENTED_NAMES__.add(__func_name)
+
+
 def __get_arg(args, kwargs, position, name):
     if position is not None and position < len(args):
         return True, args[position]
@@ -57,6 +89,14 @@ def __get_arg(args, kwargs, position, name):
 
 def __isclose(a, b, tol=1e-6):
     try:
+        if isinstance(a, str) or isinstance(b, str):
+            # Comparación exacta: sirve para kwargs de texto de la propia
+            # rutina de scipy (p.ej. method="iteration" en fixed_point), no
+            # para "cuán parecidos" son dos textos. Antes de este chequeo,
+            # una cadena caía en la rama de abajo (tiene __len__) y se
+            # comparaba caracter por caracter con float(), lo que siempre
+            # fallaba: un kwarg de texto nunca podía coincidir con nada.
+            return a == b
         if hasattr(a, "__len__") or hasattr(b, "__len__"):
             a, b = list(a), list(b)
             return len(a) == len(b) and all(__isclose(x, y, tol) for x, y in zip(a, b))
@@ -122,7 +162,12 @@ def _arg_detail_lines(cid: str, match_args: list) -> list[str]:
                 f"__ok_{cid}_{i} = bool(__found_{cid}_{i} and __isclose(__val_{cid}_{i}, {expected!r}, {tol!r}))"
             )
             lines.append("try:")
-            lines.append(f"    __got_{cid}_{i} = float(__val_{cid}_{i}) if __found_{cid}_{i} else None")
+            # str se deja tal cual (p.ej. method="iteration"); cualquier otra
+            # cosa se intenta convertir a float para el detalle numérico.
+            lines.append(
+                f"    __got_{cid}_{i} = (__val_{cid}_{i} if isinstance(__val_{cid}_{i}, str) "
+                f"else float(__val_{cid}_{i})) if __found_{cid}_{i} else None"
+            )
             lines.append("except Exception:")
             lines.append(f"    __got_{cid}_{i} = None")
             lines.append(
@@ -146,6 +191,22 @@ def _build_preamble(checks: list) -> str:
         lines.append(f"__patch({qn!r})")
     lines.append("")
 
+    # blocked_call: rutinas deshabilitadas para ESTE problema porque
+    # resolverían el ejercicio sin pasar por el método que se está evaluando
+    # (ver __block). No es un check puntuado — no aparece en __RESULTS__ ni
+    # en la rúbrica visible; si el estudiante la llama, su script revienta
+    # ahí y las variables que dependían de esa llamada quedan sin definir.
+    for c in checks:
+        if c["type"] != "blocked_call":
+            continue
+        custom_message = c.get("message")
+        for qn in c["qualnames"]:
+            # Mensaje por rutina (nombra la que el estudiante realmente llamó),
+            # salvo que la rúbrica traiga un texto propio para todo el grupo.
+            message = custom_message or f"{qn} no está permitido en este problema; usa el método que pide el enunciado."
+            lines.append(f"__block({qn!r}, {message!r})")
+    lines.append("")
+
     return "\n".join(lines)
 
 
@@ -162,9 +223,34 @@ def _build_footer(checks: list) -> str:
 
     lines.append("__skip = set(__INSTRUMENTED_NAMES__)")
     lines.append("__RESULTS__ = {}")
+    # matplotlib se importa UNA vez aquí (no en cada check "plot" ni de nuevo
+    # más abajo al capturar las figuras): "Agg" porque este proceso no tiene
+    # pantalla, así que plt.show()/plt.plot() no pueden fallar ni bloquear
+    # esperando una ventana.
+    lines.append("try:")
+    lines.append("    import matplotlib as __mpl")
+    lines.append("    __mpl.use('Agg')")
+    lines.append("    import matplotlib.pyplot as __plt")
+    lines.append("    __FIGURE_COUNT__ = len(__plt.get_fignums())")
+    lines.append("except Exception:")
+    lines.append("    __plt = None")
+    lines.append("    __FIGURE_COUNT__ = 0")
     lines.append("")
 
     for c in checks:
+        if c["type"] == "blocked_call":
+            continue  # sin id, sin resultado: ver __block en el preámbulo
+        if c["type"] == "plot":
+            # Solo comprueba que el estudiante dejó al menos min_figures
+            # gráficas abiertas — no compara contra una referencia (verificar
+            # que la CURVA sea la correcta es mucho más frágil: distintas
+            # formas legítimas de graficar la misma f dan objetos Line2D muy
+            # distintos). La gráfica en sí SIEMPRE se le muestra al
+            # estudiante (ver figuras más abajo), sea o no la esperada.
+            lines.append(
+                f"__RESULTS__[{c['id']!r}] = {{'passed': __FIGURE_COUNT__ >= {c.get('min_figures', 1)!r}}}"
+            )
+            continue
         cid = c["id"]
         if c["type"] == "function":
             n_args = len(c["arg_names"])
@@ -177,7 +263,15 @@ def _build_footer(checks: list) -> str:
             lines.append("            continue")
             lines.append("        if not callable(__val):")
             lines.append("            continue")
-            lines.append("        if getattr(__val, '__module__', None) != '__main__':")
+            # __module__ == '__main__' cubre una función 'def'-inida por el
+            # estudiante; None cubre una función compilada dinámicamente sin
+            # módulo propio, como sp.lambdify(...) (patrón legítimo: definir
+            # f simbólicamente con sympy y convertirla a numérica para
+            # pasarla a scipy). Cualquier función importada de verdad —
+            # incluida la de referencia, si alguien intentara acceder a
+            # ella— tiene su módulo real (p.ej. 'scipy.optimize', 'trapecio'),
+            # nunca '__main__' ni None, así que ese atajo sigue bloqueado.
+            lines.append("        if getattr(__val, '__module__', None) not in ('__main__', None):")
             lines.append("            continue")
             lines.append(f"        if __matches_ref(__val, __ref_{cid}, __points_{cid}):")
             lines.append(f"            __found_{cid} = True")
@@ -258,8 +352,16 @@ def _build_footer(checks: list) -> str:
             var = c["variable"]
             lines.append("try:")
             lines.append(f"    __v = __STUDENT_NS[{var!r}]")
+            # .item() sirve para un escalar numpy (0-d o tamaño 1); un vector o
+            # matriz (p.ej. la matriz de iteración de Jacobi/Gauss-Seidel/SOR,
+            # o la solución de un sistema con scipy.linalg.solve) lanza
+            # ValueError ahí, así que se cae a .tolist() para conservarlo como
+            # lista (anidada si es 2D) serializable en JSON.
             lines.append("    if hasattr(__v, 'item'):")
-            lines.append("        __v = __v.item()")
+            lines.append("        try:")
+            lines.append("            __v = __v.item()")
+            lines.append("        except (ValueError, TypeError):")
+            lines.append("            __v = __v.tolist() if hasattr(__v, 'tolist') else __v")
             lines.append(f"    __RESULTS__[{cid!r}] = {{'value': __v}}")
             lines.append("except KeyError:")
             lines.append(
@@ -269,7 +371,25 @@ def _build_footer(checks: list) -> str:
             lines.append(f"    __RESULTS__[{cid!r}] = {{'error': str(__e)}}")
             lines.append("")
 
-    lines.append(f'print("{RESULT_MARKER}" + _json.dumps(__RESULTS__))')
+    # Captura de gráficas: cualquier figura que el código del estudiante haya
+    # dejado abierta (contada arriba en __FIGURE_COUNT__, para el check
+    # "plot") se codifica como PNG en base64 para que el frontend la muestre
+    # (ver ProblemCard.jsx). Reutiliza el __plt ya importado más arriba.
+    lines.append("__FIGURES__ = []")
+    lines.append("if __plt is not None:")
+    lines.append("    try:")
+    lines.append("        import io as __io, base64 as __base64")
+    lines.append("        for __fignum in __plt.get_fignums():")
+    lines.append("            __fig = __plt.figure(__fignum)")
+    lines.append("            __buf = __io.BytesIO()")
+    lines.append("            __fig.savefig(__buf, format='png', dpi=100, bbox_inches='tight')")
+    lines.append("            __FIGURES__.append(__base64.b64encode(__buf.getvalue()).decode('ascii'))")
+    lines.append("        __plt.close('all')")
+    lines.append("    except Exception:")
+    lines.append("        pass")
+    lines.append("")
+
+    lines.append(f'print("{RESULT_MARKER}" + _json.dumps({{"checks": __RESULTS__, "figures": __FIGURES__}}))')
     return "\n".join(lines)
 
 
@@ -295,49 +415,100 @@ def _build_runner(code: str, checks: list) -> str:
     return "\n".join(lines)
 
 
+def _run_in_sandbox_service(full_script: str) -> tuple[str, str]:
+    """Envía el script ya ensamblado al contenedor ejecutor aislado (ver
+    executor_service/server.py) y devuelve (stdout, stderr). El script corre
+    ALLÁ, en un contenedor sin la base de datos montada, sin .env y sin red
+    a Internet — nunca en este proceso."""
+    body = json.dumps({"script": full_script, "timeout": RUN_TIMEOUT_SECONDS}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{EXECUTOR_SERVICE_URL}/run", data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=RUN_TIMEOUT_SECONDS + 10) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return "", "El entorno de ejecución no respondió. Intenta de nuevo en unos segundos."
+    return payload.get("stdout", ""), payload.get("stderr", "")
+
+
+def _run_locally(full_script: str) -> tuple[str, str]:
+    """Respaldo SOLO para desarrollo local sin Docker (p.ej. corriendo con
+    `venv` directamente, como en las auditorías de este executor). No aísla
+    filesystem/red/base de datos: el código del estudiante corre en este
+    mismo proceso Python con este mismo usuario. NUNCA se activa si
+    EXECUTOR_SERVICE_URL está definida, que es como se despliega siempre en
+    Docker (ver docker-entrypoint.sh / docker-executor-setup.sh)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        proc = subprocess.run(
+            [sys.executable, "-"],
+            input=full_script,
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            timeout=RUN_TIMEOUT_SECONDS,
+        )
+        return proc.stdout, proc.stderr
+
+
 def run_student_code(code: str, checks: list) -> dict:
-    """Ejecuta el código del estudiante en un subproceso aislado con timeout,
-    instrumentado según la lista `checks` (rúbrica del problema) para poder
-    verificar imports/llamadas/funciones definidas y variables finales.
+    """Ejecuta el código del estudiante, instrumentado según la lista `checks`
+    (rúbrica del problema) para poder verificar imports/llamadas/funciones
+    definidas y variables finales.
 
-    El script se pasa por stdin (no se escribe a disco) y el código del
-    estudiante corre en su propio namespace, para que no pueda leer el script
-    ni acceder directamente a las funciones/datos de referencia usados para
-    calificar.
-
-    NOTA: este executor es solo para el prototipo LOCAL de prueba. No aisla
-    filesystem/red como haría un contenedor Docker; no usar tal cual en producción
-    con estudiantes no confiables.
-    """
+    El script se arma aquí (conoce la rúbrica) pero se EJECUTA en el
+    contenedor ejecutor aislado vía EXECUTOR_SERVICE_URL (ver
+    _run_in_sandbox_service): sin la base de datos, sin secretos, sin red a
+    Internet, con límites de CPU/memoria/procesos propios además de los del
+    contenedor. Sin esa variable de entorno (solo en desarrollo local sin
+    Docker) se cae a _run_locally, que NO aísla nada — ver su docstring."""
     full_script = _build_runner(code, checks)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-"],
-                input=full_script,
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=RUN_TIMEOUT_SECONDS,
-            )
-            stdout, stderr = proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired:
-            return {
-                "stdout": "",
-                "stderr": f"Tiempo de ejecución excedido ({RUN_TIMEOUT_SECONDS}s).",
-                "checks": {},
-            }
+    try:
+        if EXECUTOR_SERVICE_URL:
+            stdout, stderr = _run_in_sandbox_service(full_script)
+        else:
+            stdout, stderr = _run_locally(full_script)
+    except subprocess.TimeoutExpired:
+        return {
+            "stdout": "",
+            "stderr": f"Tiempo de ejecución excedido ({RUN_TIMEOUT_SECONDS}s).",
+            "checks": {},
+            "figures": [],
+        }
 
-    results = {}
+    payload = {}
     visible_stdout_lines = []
     for line in stdout.splitlines():
         if line.startswith(RESULT_MARKER):
-            results = json.loads(line[len(RESULT_MARKER):])
+            payload = json.loads(line[len(RESULT_MARKER):])
         else:
             visible_stdout_lines.append(line)
 
-    return {"stdout": "\n".join(visible_stdout_lines), "stderr": stderr, "checks": results}
+    return {
+        "stdout": "\n".join(visible_stdout_lines),
+        "stderr": stderr,
+        "checks": payload.get("checks", {}),
+        "figures": payload.get("figures", []),
+    }
+
+
+def _values_close(value, expected, tol) -> bool:
+    """Como math.isclose, pero también acepta vectores/matrices (listas
+    anidadas) para poder calificar una respuesta final como scipy.linalg.solve
+    o una matriz de iteración de Jacobi/Gauss-Seidel/SOR, no solo un escalar.
+    (El lado del ejecutor ya deja los numpy arrays como listas vía
+    .tolist() — ver _build_footer — así que aquí solo llegan tipos JSON.)"""
+    if isinstance(expected, (list, tuple)) or isinstance(value, (list, tuple)):
+        if not isinstance(value, (list, tuple)) or not isinstance(expected, (list, tuple)):
+            return False
+        if len(value) != len(expected):
+            return False
+        return all(_values_close(v, e, tol) for v, e in zip(value, expected))
+    try:
+        return math.isclose(value, expected, abs_tol=tol)
+    except TypeError:
+        return False
 
 
 def grade_submission(run_result: dict, problem) -> dict:
@@ -347,6 +518,8 @@ def grade_submission(run_result: dict, problem) -> dict:
     report = []
     total = 0.0
     for c in checks_cfg:
+        if c["type"] == "blocked_call":
+            continue  # no es un criterio puntuado; ver __block en executor.py
         cid = c["id"]
         max_points = c["points"]
         entry = results.get(cid, {}) or {}
@@ -355,10 +528,7 @@ def grade_submission(run_result: dict, problem) -> dict:
             value = entry.get("value")
             passed = False
             if value is not None and "error" not in entry:
-                try:
-                    passed = math.isclose(value, c["expected"], abs_tol=c.get("tolerance", 1e-4))
-                except TypeError:
-                    passed = False
+                passed = _values_close(value, c["expected"], c.get("tolerance", 1e-4))
         else:
             # "function"/"call" ahora llegan como dicts ({'passed': ..., ...detalle})
             # para poder explicar el porqué; el bool a secas se sigue aceptando
@@ -389,6 +559,13 @@ def explain_check(c: dict, entry, passed: bool) -> str:
             return f"La variable '{var}' no fue definida."
         expected = c["expected"]
         tol = c.get("tolerance", 1e-4)
+        if isinstance(expected, (list, tuple)) or isinstance(value, (list, tuple)):
+            # Vector o matriz (p.ej. la solución de un sistema o una matriz de
+            # iteración): no hay un "diff" único que reportar, se muestran
+            # ambos valores completos.
+            if passed:
+                return f"'{var}' = {value!r}, coincide con lo esperado."
+            return f"'{var}' = {value!r}, pero se esperaba {expected!r} (tolerancia {tol:.2g} por componente)."
         try:
             diff = abs(float(value) - expected)
         except (TypeError, ValueError):
@@ -431,9 +608,13 @@ def explain_check(c: dict, entry, passed: bool) -> str:
             if d["kind"] == "function":
                 parts.append(f"el argumento '{d['name']}' no es la función esperada")
             else:
-                got = d.get("got")
-                got_str = f"{got:g}" if isinstance(got, (int, float)) else "no se pudo leer"
-                parts.append(f"'{d['name']}' = {got_str} (se esperaba {d['expected']:g})")
+                got, expected = d.get("got"), d["expected"]
+                got_str = f"{got:g}" if isinstance(got, (int, float)) else (repr(got) if got is not None else "no se pudo leer")
+                expected_str = f"{expected:g}" if isinstance(expected, (int, float)) else repr(expected)
+                parts.append(f"'{d['name']}' = {got_str} (se esperaba {expected_str})")
         return "Llamaste a la rutina, pero " + "; ".join(parts) + "."
+
+    if ctype == "plot":
+        return "Generaste al menos una gráfica." if passed else "No generaste ninguna gráfica."
 
     return ""

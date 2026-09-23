@@ -1,0 +1,32 @@
+# Contenedor ejecutor aislado: corre el código de los estudiantes, y SOLO
+# eso. No contiene el código de la aplicación, ni .env, ni la base de datos
+# (nada de eso se copia aquí), y se levanta sin acceso a Internet (ver
+# docker-executor-setup.sh: red --internal + --network none como respaldo).
+# Cualquier CVE de numpy/scipy/etc. o fuga que logre el código de un
+# estudiante queda contenida aquí: sin datos de otros estudiantes que leer,
+# sin secretos que robar, sin red por donde filtrarlos.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY executor_service/requirements.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY executor_service/server.py server.py
+
+# Sin datos de curso (Rutinas_MN_Python_Est, LMN.xls): un problema que
+# necesite esas rutinas se sirve completo desde app/executor.py (que arma el
+# script y las inyecta como texto), no se le da al ejecutor una copia propia.
+
+RUN useradd -m -u 1000 sandboxuser \
+    && mkdir -p /tmp/matplotlib \
+    && chown -R sandboxuser:sandboxuser /app /tmp/matplotlib
+
+ENV MPLBACKEND=Agg
+ENV MPLCONFIGDIR=/tmp/matplotlib
+ENV PYTHONDONTWRITEBYTECODE=1
+
+USER sandboxuser
+EXPOSE 9000
+
+CMD ["python", "server.py"]

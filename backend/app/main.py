@@ -637,6 +637,11 @@ def run_code(
             total_score=0.0,
             max_score=problem.max_score,
             solution_code=None,
+            # Las gráficas SÍ se muestran incluso con el examen en curso: son
+            # una herramienta de trabajo del enunciado ("grafique f en [a,b]"),
+            # no revelan si la respuesta es correcta, a diferencia de
+            # checks/total_score/solution_code (ocultos arriba a propósito).
+            figures=result.get("figures", []),
         )
 
     return schemas.RunResult(
@@ -646,6 +651,7 @@ def run_code(
         total_score=grading["total_score"],
         max_score=problem.max_score,
         solution_code=problem.solution_code,
+        figures=result.get("figures", []),
     )
 
 
@@ -754,6 +760,7 @@ def teacher_run_code(
         total_score=grading["total_score"],
         max_score=problem.max_score,
         solution_code=problem.solution_code,
+        figures=result.get("figures", []),
     )
 
 

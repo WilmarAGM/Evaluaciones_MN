@@ -48,7 +48,16 @@ class Exam(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    duration_minutes = Column(Integer, default=50, nullable=True)  # None = sin límite de tiempo
+    # None = sin límite de tiempo. SIN default=50: SQLAlchemy aplica el
+    # default de una columna también cuando se asigna None EXPLÍCITAMENTE
+    # (no solo cuando el atributo nunca se toca), así que con default=50 un
+    # Exam(duration_minutes=None, ...) terminaba guardando 50 igual —
+    # encontrado en producción el 2026-09-23: el "Simulacro Parcial Final"
+    # (pensado como examen sin límite, ver seed_taller.py) llevaba
+    # duration_minutes=50 desde que se creó. Los tres sitios que construyen
+    # Exam (main.py, seed_taller.py, seed_parcial2.py) siempre pasan este
+    # valor explícito, así que quitar el default no cambia nada más.
+    duration_minutes = Column(Integer, nullable=True)
     is_open = Column(Boolean, default=True, nullable=False)  # el docente habilita/deshabilita el acceso
     group = Column(Integer, nullable=True)  # grupo dueño del examen (1-4)
     # Máximo de salidas de la ventana del examen antes de anularlo con nota 0.

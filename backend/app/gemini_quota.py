@@ -1,9 +1,12 @@
-"""Límite propio de uso diario de la API de Gemini (Google AI Studio), para
-no depender únicamente del cupo gratuito de Google -que ya ha cambiado sin
-aviso- y para poder mostrarle al docente cuánto le queda antes de un 429.
+"""Seguimiento de uso diario de la API de Gemini (Google AI Studio) — SOLO
+informativo, para mostrarle al docente cuánto ha gastado hoy. Ya NO impone
+un tope propio: la cuenta es de pago por uso, así que se deja llamar
+libremente y quien avisa de un cupo agotado de verdad es Google (ver
+QuotaExceededError, ahora usado para el 429/RESOURCE_EXHAUSTED real de la
+API, no para un límite propio — ver gemini_agents._call_gemini).
 
 Persiste el conteo del día en un archivo JSON simple (no hay concurrencia
-real: esto lo corre el docente manualmente desde un script)."""
+real: esto lo corre el docente manualmente desde el panel)."""
 import json
 import os
 import threading
@@ -14,7 +17,10 @@ _QUOTA_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".g
 
 
 class QuotaExceededError(Exception):
-    pass
+    """Google respondió que de verdad se agotó el cupo/crédito de la API
+    (429 RESOURCE_EXHAUSTED, tras los reintentos de errores transitorios) —
+    ver _call_gemini. Ya no representa un límite propio: ver el docstring
+    del módulo."""
 
 
 def _today() -> str:
@@ -37,21 +43,11 @@ def get_usage_today() -> dict:
     return _load().get(_today(), {"calls": 0, "tokens": 0})
 
 
-def check_and_reserve() -> None:
-    """Levanta QuotaExceededError si ya se superó el cupo diario de tokens (los
-    tokens de una llamada solo se conocen después de la respuesta, así que el
-    límite de tokens se aplica "al primer exceso": la llamada que cruza el
-    umbral se deja pasar, pero la siguiente ya no). El cupo de NÚMERO de
-    llamados ya no aplica -la cuenta pasó a pago por uso, ya no depende del
-    cupo gratuito de Google-; el conteo de llamadas se sigue guardando solo
-    para mostrarle al docente cuánto se ha usado."""
-    max_tokens = int(os.environ.get("GEMINI_MAX_TOKENS_PER_DAY", "200000"))
+def record_call() -> None:
     with _LOCK:
         data = _load()
         today = _today()
         usage = data.get(today, {"calls": 0, "tokens": 0})
-        if usage["tokens"] >= max_tokens:
-            raise QuotaExceededError(f"cupo diario de tokens agotado ({usage['tokens']}/{max_tokens})")
         usage["calls"] += 1
         data[today] = usage
         _save(data)

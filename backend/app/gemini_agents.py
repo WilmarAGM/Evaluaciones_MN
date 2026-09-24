@@ -50,10 +50,15 @@ from google.genai import types
 from pydantic import BaseModel
 
 from . import executor, models
-from .gemini_quota import check_and_reserve, record_tokens, QuotaExceededError
+from .gemini_quota import record_call, record_tokens, QuotaExceededError
 
 load_dotenv(os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".env")))
 
+# 429 aquí significa "Google respondió RESOURCE_EXHAUSTED" (cupo/crédito
+# real agotado, o un pico de límite de peticiones por minuto) — se reintenta
+# igual que 500/503 por si es un pico pasajero, pero si sigue fallando tras
+# los reintentos, _call_gemini lo traduce a QuotaExceededError con el
+# mensaje real de Google, no a un límite propio (ver gemini_quota.py).
 RETRYABLE_STATUS_CODES = {429, 500, 503}
 MAX_TRANSIENT_RETRIES = 3
 
@@ -183,7 +188,7 @@ def _call_gemini(prompt: str, system: str, response_schema: type[BaseModel] | No
 
     last_error = None
     for attempt in range(MAX_TRANSIENT_RETRIES + 1):
-        check_and_reserve()
+        record_call()
         client = _get_client()
         try:
             resp = client.models.generate_content(
@@ -197,6 +202,15 @@ def _call_gemini(prompt: str, system: str, response_schema: type[BaseModel] | No
             if getattr(e, "code", None) in RETRYABLE_STATUS_CODES and attempt < MAX_TRANSIENT_RETRIES:
                 time.sleep(2**attempt)
                 continue
+            # Tras agotar los reintentos: un 429 real de Google (cupo/crédito
+            # agotado, o límite de peticiones por minuto que no cedió) se
+            # traduce a QuotaExceededError con el mensaje real de Google, para
+            # que el docente vea una notificación clara en vez de un error
+            # genérico — ver teacher_load_bank_from_tex en main.py.
+            if getattr(e, "code", None) == 429:
+                raise QuotaExceededError(
+                    f"Google respondió que se agotó el cupo/crédito de la API ({e.status}): {e.message}"
+                ) from e
             raise
     else:
         raise last_error

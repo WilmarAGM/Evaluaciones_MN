@@ -1276,7 +1276,10 @@ def teacher_load_bank_from_tex(
     try:
         result = orchestrate_load_tex(tmp_path, bank_id, db, max_problems=max_problems)
     except QuotaExceededError as e:
-        raise HTTPException(status_code=429, detail=f"Cupo diario propio de Gemini agotado: {e}.")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Se agotó el cupo/crédito de la API de Gemini (avisa Google, no un límite propio): {e}.",
+        )
     finally:
         os.unlink(tmp_path)
 

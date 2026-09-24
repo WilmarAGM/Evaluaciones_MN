@@ -34,6 +34,7 @@ echo "--- Migraciones de esquema ---"
 python -m app.migrate_attempt_problems /app/data/evaluaciones.db
 python -m app.migrate_session_proctoring /app/data/evaluaciones.db
 python -m app.migrate_fix_untimed_exams /app/data/evaluaciones.db
+python -m app.migrate_global_banks /app/data/evaluaciones.db
 
 echo "--- Datos semilla (idempotentes) ---"
 python -m app.seed

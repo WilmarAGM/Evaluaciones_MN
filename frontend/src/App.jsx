@@ -13,6 +13,8 @@ import TeacherBanks from "./pages/TeacherBanks";
 import TeacherProblemDetail from "./pages/TeacherProblemDetail";
 import TeacherStudents from "./pages/TeacherStudents";
 import AdminTeachers from "./pages/AdminTeachers";
+import AdminBanks from "./pages/AdminBanks";
+import AdminProblemDetail from "./pages/AdminProblemDetail";
 
 function PrivateRoute({ children }) {
   const { user } = useAuth();
@@ -125,6 +127,22 @@ export default function App() {
             element={
               <AdminRoute>
                 <AdminTeachers />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/banks"
+            element={
+              <AdminRoute>
+                <AdminBanks />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/problems/:problemId"
+            element={
+              <AdminRoute>
+                <AdminProblemDetail />
               </AdminRoute>
             }
           />

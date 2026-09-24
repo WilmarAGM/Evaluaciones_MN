@@ -37,7 +37,10 @@ function CheckRow({ check }) {
   );
 }
 
-export default function TeacherProblemDetail() {
+// Igual que TeacherProblemDetail, pero sobre un problema de un banco
+// GENERAL (ver AdminBanks.jsx) — el admin sí puede publicar/eliminar aquí,
+// a diferencia de la vista de solo lectura que ve un docente.
+export default function AdminProblemDetail() {
   const { problemId } = useParams();
   const [problem, setProblem] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -50,7 +53,7 @@ export default function TeacherProblemDetail() {
   useEffect(() => {
     setLoading(true);
     api
-      .getTeacherProblemDetail(problemId)
+      .getAdminProblemDetail(problemId)
       .then(setProblem)
       .catch(() => setError("No se pudo cargar el problema."))
       .finally(() => setLoading(false));
@@ -59,7 +62,7 @@ export default function TeacherProblemDetail() {
   async function handlePublish() {
     setPublishing(true);
     try {
-      await api.publishTeacherProblem(problem.id);
+      await api.publishAdminProblem(problem.id);
       setProblem((prev) => ({ ...prev, status: "published" }));
     } catch (err) {
       window.alert("No se pudo publicar el problema.");
@@ -74,8 +77,8 @@ export default function TeacherProblemDetail() {
 
     setDeleting(true);
     try {
-      await api.deleteTeacherProblem(problem.id);
-      navigate("/teacher/banks");
+      await api.deleteAdminProblem(problem.id);
+      navigate("/admin/banks");
     } catch (err) {
       window.alert(err.response?.data?.detail || "No se pudo eliminar el problema.");
       setDeleting(false);
@@ -90,7 +93,7 @@ export default function TeacherProblemDetail() {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-fuchsia-500 flex items-center justify-center text-white font-bold">
               ∑
             </div>
-            <span className="text-white font-semibold">Métodos Numéricos · Docente</span>
+            <span className="text-white font-semibold">Métodos Numéricos · Admin</span>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-slate-400 text-sm hidden sm:block">{user?.full_name || user?.email}</span>
@@ -108,8 +111,8 @@ export default function TeacherProblemDetail() {
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-10">
-        <Link to="/teacher/banks" className="text-sm text-slate-400 hover:text-white transition">
-          ← Volver a bancos de problemas
+        <Link to="/admin/banks" className="text-sm text-slate-400 hover:text-white transition">
+          ← Volver a bancos generales
         </Link>
 
         {loading && <p className="text-slate-500 mt-6">Cargando...</p>}
@@ -123,14 +126,6 @@ export default function TeacherProblemDetail() {
                 <h1 className="text-2xl font-bold text-white mt-1">{problem.title}</h1>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {problem.is_global && (
-                  <span
-                    title="Banco general gestionado por el admin"
-                    className="text-xs font-medium rounded-full border px-2.5 py-1 bg-sky-500/15 text-sky-300 border-sky-500/30"
-                  >
-                    🌐 General
-                  </span>
-                )}
                 <span
                   className={`text-xs font-medium rounded-full border px-2.5 py-1 ${
                     problem.status === "draft"
@@ -143,7 +138,7 @@ export default function TeacherProblemDetail() {
                 <span className="text-xs text-slate-500 rounded-full border border-white/10 px-2.5 py-1">
                   {problem.max_score.toFixed(0)} pts
                 </span>
-                {!problem.is_global && problem.status === "draft" && (
+                {problem.status === "draft" && (
                   <button
                     onClick={handlePublish}
                     disabled={publishing}
@@ -152,15 +147,13 @@ export default function TeacherProblemDetail() {
                     {publishing ? "Publicando..." : "Publicar"}
                   </button>
                 )}
-                {!problem.is_global && (
-                  <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-3 py-1.5 transition disabled:opacity-60"
-                  >
-                    {deleting ? "Eliminando..." : "🗑 Eliminar"}
-                  </button>
-                )}
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-3 py-1.5 transition disabled:opacity-60"
+                >
+                  {deleting ? "Eliminando..." : "🗑 Eliminar"}
+                </button>
               </div>
             </div>
 

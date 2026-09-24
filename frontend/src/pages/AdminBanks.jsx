@@ -5,7 +5,11 @@ import * as api from "../api";
 import ChangePasswordForm from "../components/ChangePasswordForm";
 import BankTexUploader from "../components/BankTexUploader";
 
-export default function TeacherBanks() {
+// Bancos GENERALES: gestionados solo por el admin, visibles en solo lectura
+// para todos los docentes al armar un examen (ver get_bank_or_404 en
+// main.py) — así ningún docente se ve obligado a evaluar según el criterio
+// de otro, pero sí puede apoyarse en un banco compartido si quiere.
+export default function AdminBanks() {
   const [banks, setBanks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
@@ -25,16 +29,16 @@ export default function TeacherBanks() {
   function loadBanks() {
     setLoading(true);
     return api
-      .getTeacherBanks()
+      .getAdminBanks()
       .then(setBanks)
-      .catch(() => setError("No se pudieron cargar los bancos de problemas."))
+      .catch(() => setError("No se pudieron cargar los bancos generales."))
       .finally(() => setLoading(false));
   }
 
   async function handlePublish(problemId) {
     setPublishingId(problemId);
     try {
-      await api.publishTeacherProblem(problemId);
+      await api.publishAdminProblem(problemId);
       setBanks((prev) =>
         prev.map((bank) => ({
           ...bank,
@@ -54,7 +58,7 @@ export default function TeacherBanks() {
 
     setDeletingProblemId(problem.id);
     try {
-      await api.deleteTeacherProblem(problem.id);
+      await api.deleteAdminProblem(problem.id);
       setBanks((prev) =>
         prev.map((bank) => ({ ...bank, problems: bank.problems.filter((p) => p.id !== problem.id) }))
       );
@@ -67,13 +71,13 @@ export default function TeacherBanks() {
 
   async function handleDeleteBank(bank) {
     const confirmed = window.confirm(
-      `¿Eliminar el banco "${bank.title}" completo, con sus ${bank.problems.length} problema(s)? Esta acción no se puede deshacer.`
+      `¿Eliminar el banco general "${bank.title}" completo, con sus ${bank.problems.length} problema(s)? Esta acción no se puede deshacer.`
     );
     if (!confirmed) return;
 
     setDeletingBankId(bank.id);
     try {
-      await api.deleteTeacherBank(bank.id);
+      await api.deleteAdminBank(bank.id);
       setBanks((prev) => prev.filter((b) => b.id !== bank.id));
     } catch (err) {
       window.alert(err.response?.data?.detail || "No se pudo eliminar el banco.");
@@ -102,7 +106,7 @@ export default function TeacherBanks() {
     }
     setCreating(true);
     try {
-      const bank = await api.createTeacherBank({ title: title.trim(), description: description.trim() || null });
+      const bank = await api.createAdminBank({ title: title.trim(), description: description.trim() || null });
       setBanks((prev) => [...prev, bank]);
       setTitle("");
       setDescription("");
@@ -121,17 +125,15 @@ export default function TeacherBanks() {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-fuchsia-500 flex items-center justify-center text-white font-bold">
               ∑
             </div>
-            <span className="text-white font-semibold">Métodos Numéricos · Docente</span>
+            <span className="text-white font-semibold">Métodos Numéricos · Admin</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-slate-400 text-sm hidden sm:block">
-              {user?.full_name || user?.email}
-            </span>
+            <span className="text-slate-400 text-sm hidden sm:block">{user?.full_name || user?.email}</span>
             <Link
-              to="/teacher/students"
+              to="/admin/teachers"
               className="text-sm text-slate-300 hover:text-white border border-white/10 rounded-lg px-3 py-1.5 hover:bg-white/5 transition"
             >
-              Estudiantes
+              Docentes
             </Link>
             <ChangePasswordForm />
             <button
@@ -148,21 +150,15 @@ export default function TeacherBanks() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-10">
-        <div className="flex items-start justify-between gap-4 mb-1">
-          <h1 className="text-2xl font-bold text-white">Bancos de problemas</h1>
-          <Link
-            to="/teacher/exams"
-            className="shrink-0 rounded-lg border border-white/10 hover:bg-white/5 text-slate-200 text-sm font-medium px-4 py-2 transition"
-          >
-            ← Volver a exámenes
-          </Link>
-        </div>
+        <h1 className="text-2xl font-bold text-white mb-1">Bancos generales</h1>
         <p className="text-slate-400 mb-8">
-          Colecciones de problemas reutilizables para armar exámenes (fijos o sorteados aleatoriamente).
+          Bancos de problemas compartidos: todos los docentes los ven y pueden usarlos al armar un examen (fijos
+          o sorteados), pero solo tú puedes editarlos, cargarles contenido o borrarlos — así ningún docente
+          se ve obligado a evaluar según el criterio de otro, y a la vez pueden apoyarse en uno común si quieren.
         </p>
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-10">
-          <h2 className="text-lg font-semibold text-white mb-4">Crear banco nuevo</h2>
+          <h2 className="text-lg font-semibold text-white mb-4">Crear banco general</h2>
           <form onSubmit={handleCreate} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
             <div>
               <label className="block text-sm text-slate-400 mb-1">Título</label>
@@ -191,14 +187,6 @@ export default function TeacherBanks() {
             </button>
           </form>
           {error && <p className="text-rose-400 text-sm mt-3">{error}</p>}
-
-          <div className="mt-5 rounded-xl border border-dashed border-white/10 bg-black/20 p-4">
-            <p className="text-sm text-slate-300 font-medium">🤖 Cargue asistido con agentes IA (Gemini)</p>
-            <p className="text-sm text-slate-500 mt-1">
-              Ya disponible: crea el banco arriba y luego usa "🤖 Cargar con IA" en su tarjeta para subir un
-              .tex y generar problemas automáticamente (quedan como borrador, revísalos antes de publicar).
-            </p>
-          </div>
         </section>
 
         {loading && <p className="text-slate-500">Cargando...</p>}
@@ -210,27 +198,15 @@ export default function TeacherBanks() {
               className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-lg shadow-black/20"
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <h3 className="text-lg font-semibold text-white truncate">{bank.title}</h3>
-                  {bank.is_global && (
-                    <span
-                      title="Banco general gestionado por el admin: puedes usarlo en tus exámenes, pero no editarlo"
-                      className="shrink-0 text-xs font-medium rounded-full border px-2 py-0.5 bg-sky-500/15 text-sky-300 border-sky-500/30"
-                    >
-                      🌐 General
-                    </span>
-                  )}
-                </div>
-                {!bank.is_global && (
-                  <button
-                    onClick={() => handleDeleteBank(bank)}
-                    disabled={deletingBankId === bank.id}
-                    title="Eliminar banco completo"
-                    className="shrink-0 text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
-                  >
-                    {deletingBankId === bank.id ? "..." : "🗑 Eliminar banco"}
-                  </button>
-                )}
+                <h3 className="text-lg font-semibold text-white">{bank.title}</h3>
+                <button
+                  onClick={() => handleDeleteBank(bank)}
+                  disabled={deletingBankId === bank.id}
+                  title="Eliminar banco completo"
+                  className="shrink-0 text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
+                >
+                  {deletingBankId === bank.id ? "..." : "🗑 Eliminar banco"}
+                </button>
               </div>
               {bank.description && <p className="text-slate-400 text-sm mt-1">{bank.description}</p>}
 
@@ -243,7 +219,7 @@ export default function TeacherBanks() {
                     <li key={p.id} className="text-sm text-slate-300">
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex items-center gap-2 min-w-0">
-                          <Link to={`/teacher/problems/${p.id}`} className="truncate hover:text-brand-300 hover:underline transition">
+                          <Link to={`/admin/problems/${p.id}`} className="truncate hover:text-brand-300 hover:underline transition">
                             {p.title}
                           </Link>
                           {p.status === "draft" && (
@@ -259,7 +235,7 @@ export default function TeacherBanks() {
                         </span>
                         <span className="flex items-center gap-2 shrink-0">
                           <span className="text-slate-500">{p.max_score.toFixed(0)} pts</span>
-                          {!bank.is_global && p.status === "draft" && (
+                          {p.status === "draft" && (
                             <button
                               onClick={() => handlePublish(p.id)}
                               disabled={publishingId === p.id}
@@ -268,16 +244,14 @@ export default function TeacherBanks() {
                               {publishingId === p.id ? "..." : "Publicar"}
                             </button>
                           )}
-                          {!bank.is_global && (
-                            <button
-                              onClick={() => handleDeleteProblem(p)}
-                              disabled={deletingProblemId === p.id}
-                              title="Eliminar problema"
-                              className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
-                            >
-                              {deletingProblemId === p.id ? "..." : "🗑"}
-                            </button>
-                          )}
+                          <button
+                            onClick={() => handleDeleteProblem(p)}
+                            disabled={deletingProblemId === p.id}
+                            title="Eliminar problema"
+                            className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
+                          >
+                            {deletingProblemId === p.id ? "..." : "🗑"}
+                          </button>
                         </span>
                       </div>
                       {p.review_notes && (
@@ -290,20 +264,13 @@ export default function TeacherBanks() {
                 </ul>
               )}
 
-              {bank.is_global ? (
-                <p className="mt-4 text-xs text-slate-500">
-                  Banco general: puedes usarlo al armar un examen, pero solo el admin puede editarlo o cargarle
-                  problemas.
-                </p>
-              ) : (
-                <BankTexUploader bank={bank} onLoaded={handleTexLoaded} uploadFn={api.loadBankFromTex} scope="teacher" />
-              )}
+              <BankTexUploader bank={bank} onLoaded={handleTexLoaded} uploadFn={api.loadAdminBankFromTex} scope="admin" />
             </div>
           ))}
         </div>
 
         {!loading && banks.length === 0 && (
-          <p className="text-slate-500">No hay bancos de problemas todavía.</p>
+          <p className="text-slate-500">No hay bancos generales todavía.</p>
         )}
       </main>
     </div>

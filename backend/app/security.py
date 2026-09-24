@@ -114,3 +114,12 @@ def get_current_admin(student: models.Student = Depends(get_current_student)) ->
     if student.role != "admin":
         raise HTTPException(status_code=403, detail="Acceso solo para administradores")
     return student
+
+
+def get_current_teacher_or_admin(student: models.Student = Depends(get_current_student)) -> models.Student:
+    """Para endpoints compartidos entre ambos roles (p. ej. el sondeo del
+    job de carga de .tex con IA, que arranca tanto un docente como el admin
+    sobre su propio banco)."""
+    if student.role not in ("teacher", "admin"):
+        raise HTTPException(status_code=403, detail="Acceso solo para docentes o administradores")
+    return student

@@ -30,6 +30,7 @@ from .security import (
     get_current_student,
     get_current_teacher,
     get_current_admin,
+    get_current_teacher_or_admin,
     has_active_session,
     start_session,
     SESSION_IDLE_MINUTES,
@@ -209,16 +210,26 @@ def get_problem_or_404(db: Session, problem_id: int) -> models.Problem:
     return problem
 
 
-def get_teacher_problem_or_404(db: Session, problem_id: int, group: int) -> models.Problem:
+def get_teacher_problem_or_404(
+    db: Session, problem_id: int, group: int, allow_global: bool = False
+) -> models.Problem:
     """Como get_problem_or_404, pero exige que el problema pertenezca a un
     banco del grupo del docente (Problem no tiene columna group propia,
-    hereda el aislamiento vía su banco)."""
-    problem = (
+    hereda el aislamiento vía su banco). Con allow_global=True también deja
+    ver/usar problemas de un banco general del admin (nunca editarlos: los
+    endpoints que mutan un problema -publicar, borrar- se quedan con el
+    valor por defecto False, para que un docente no pueda tocar el banco
+    general aunque conozca su id)."""
+    q = (
         db.query(models.Problem)
         .join(models.ProblemBank, models.Problem.bank_id == models.ProblemBank.id)
-        .filter(models.Problem.id == problem_id, models.ProblemBank.group == group)
-        .first()
+        .filter(models.Problem.id == problem_id)
     )
+    if allow_global:
+        q = q.filter((models.ProblemBank.group == group) | (models.ProblemBank.is_global.is_(True)))
+    else:
+        q = q.filter(models.ProblemBank.group == group)
+    problem = q.first()
     if not problem:
         raise HTTPException(status_code=404, detail="Problema no encontrado")
     return problem
@@ -251,14 +262,49 @@ def get_problem_usage_blockers(db: Session, problem_id: int) -> list[str]:
     return blockers
 
 
-def get_bank_or_404(db: Session, bank_id: int, group: int | None = None) -> models.ProblemBank:
+def get_bank_or_404(
+    db: Session, bank_id: int, group: int | None = None, allow_global: bool = False
+) -> models.ProblemBank:
+    """Con allow_global=True, además del banco del grupo indicado, también
+    resuelve un banco general del admin (para que un docente pueda usarlo al
+    armar un examen). El valor por defecto (False) se usa en todos los
+    endpoints que MUTAN un banco -cargar .tex, borrar-, para que un docente
+    nunca pueda tocar un banco general aunque conozca su id."""
     q = db.query(models.ProblemBank).filter(models.ProblemBank.id == bank_id)
     if group is not None:
-        q = q.filter(models.ProblemBank.group == group)
+        if allow_global:
+            q = q.filter((models.ProblemBank.group == group) | (models.ProblemBank.is_global.is_(True)))
+        else:
+            q = q.filter(models.ProblemBank.group == group)
     bank = q.first()
     if not bank:
         raise HTTPException(status_code=404, detail="Banco no encontrado")
     return bank
+
+
+def get_global_bank_or_404(db: Session, bank_id: int) -> models.ProblemBank:
+    """Como get_bank_or_404, pero exige que sea un banco GENERAL (gestionado
+    por el admin), no uno de grupo de un docente."""
+    bank = (
+        db.query(models.ProblemBank)
+        .filter(models.ProblemBank.id == bank_id, models.ProblemBank.is_global.is_(True))
+        .first()
+    )
+    if not bank:
+        raise HTTPException(status_code=404, detail="Banco no encontrado")
+    return bank
+
+
+def get_global_problem_or_404(db: Session, problem_id: int) -> models.Problem:
+    problem = (
+        db.query(models.Problem)
+        .join(models.ProblemBank, models.Problem.bank_id == models.ProblemBank.id)
+        .filter(models.Problem.id == problem_id, models.ProblemBank.is_global.is_(True))
+        .first()
+    )
+    if not problem:
+        raise HTTPException(status_code=404, detail="Problema no encontrado")
+    return problem
 
 
 def get_exam_or_404(db: Session, exam_id: int, group: int | None = None) -> models.Exam:
@@ -875,7 +921,7 @@ def teacher_run_code(
     db: Session = Depends(get_db),
     teacher: models.Student = Depends(get_current_teacher),
 ):
-    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group, allow_global=True)
     result = run_problem_code(payload.code, problem)
     _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
@@ -900,7 +946,7 @@ def teacher_save_code(
     """Guarda el intento de solución del docente en su propia cuenta (no
     cuenta como Submission de un estudiante: el dashboard filtra por
     role == 'student'), para que pueda retomar la previsualización después."""
-    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group, allow_global=True)
     result = run_problem_code(payload.code, problem)
     _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
@@ -1123,13 +1169,27 @@ def teacher_list_banks(
     borradores, para la pantalla de gestión de bancos). Con
     ?published_only=true (usado al armar un examen) solo devuelve los
     publicados, para que un borrador sin revisar no pueda terminar en un
-    examen real."""
-    banks = db.query(models.ProblemBank).filter(models.ProblemBank.group == teacher.group).all()
+    examen real.
+
+    Incluye, además de los bancos propios del grupo, los bancos GENERALES
+    del admin (is_global=True, ver [[global banks]]) — el docente los ve y
+    puede usarlos al armar un examen, pero son de solo lectura: el frontend
+    oculta "cargar con IA"/"publicar"/"eliminar" para bank.is_global, y el
+    backend los rechaza igual aunque alguien se salte la UI (ver
+    get_bank_or_404/get_teacher_problem_or_404, que exigen allow_global=True
+    explícito solo en los endpoints de lectura/uso)."""
+    banks = (
+        db.query(models.ProblemBank)
+        .filter((models.ProblemBank.group == teacher.group) | (models.ProblemBank.is_global.is_(True)))
+        .order_by(models.ProblemBank.is_global, models.ProblemBank.id)
+        .all()
+    )
     return [
         schemas.BankOut(
             id=bank.id,
             title=bank.title,
             description=bank.description,
+            is_global=bank.is_global,
             problems=[
                 schemas.BankProblemOut(
                     id=p.id, title=p.title, max_score=p.max_score, status=p.status, review_notes=p.review_notes
@@ -1146,7 +1206,7 @@ def teacher_list_banks(
 def teacher_get_problem_detail(
     problem_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
-    problem = get_teacher_problem_or_404(db, problem_id, teacher.group)
+    problem = get_teacher_problem_or_404(db, problem_id, teacher.group, allow_global=True)
     return schemas.TeacherProblemDetailOut(
         id=problem.id,
         bank_id=problem.bank_id,
@@ -1159,6 +1219,7 @@ def teacher_get_problem_detail(
         max_score=problem.max_score,
         status=problem.status,
         review_notes=problem.review_notes,
+        is_global=problem.bank.is_global,
     )
 
 
@@ -1277,8 +1338,8 @@ def _run_load_tex_job(job_id: str, tmp_path: str, bank_id: int, max_problems: in
             tokens_today=usage["tokens"],
         )
         with _LOAD_TEX_JOBS_LOCK:
-            # .update(), NUNCA reemplazar el dict entero: pisaría 'teacher_id'
-            # (puesto al crear el job) y el propio docente que lo lanzó
+            # .update(), NUNCA reemplazar el dict entero: pisaría 'owner_id'
+            # (puesto al crear el job) y quien lo lanzó (docente o admin)
             # recibiría un 404 al consultarlo, ver get_load_tex_job.
             _LOAD_TEX_JOBS[job_id].update({"status": "done", "result": job_result, "error": None})
     except QuotaExceededError as e:
@@ -1301,6 +1362,28 @@ def _run_load_tex_job(job_id: str, tmp_path: str, bank_id: int, max_problems: in
         os.unlink(tmp_path)
 
 
+def _start_load_tex_job(
+    background_tasks: BackgroundTasks, owner_id: int, bank_id: int, file: UploadFile, max_problems: int | None
+) -> schemas.LoadTexJobStarted:
+    """Lógica común a la carga de .tex de un docente (su banco de grupo) y
+    del admin (un banco general) — ver teacher_load_bank_from_tex y
+    admin_load_bank_from_tex."""
+    if not file.filename.lower().endswith(".tex"):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .tex")
+
+    content = file.file.read()
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".tex", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    job_id = str(uuid.uuid4())
+    with _LOAD_TEX_JOBS_LOCK:
+        _LOAD_TEX_JOBS[job_id] = {"status": "running", "result": None, "error": None, "owner_id": owner_id}
+    background_tasks.add_task(_run_load_tex_job, job_id, tmp_path, bank_id, max_problems)
+
+    return schemas.LoadTexJobStarted(job_id=job_id, status="running")
+
+
 @app.post("/api/teacher/banks/{bank_id}/load-from-tex", response_model=schemas.LoadTexJobStarted)
 def teacher_load_bank_from_tex(
     bank_id: int,
@@ -1316,33 +1399,23 @@ def teacher_load_bank_from_tex(
     /api/teacher/load-jobs/{job_id} hasta que termine (ver _run_load_tex_job).
     Igual que el CLI load_problems_from_tex.py: todo entra como
     status="draft" (ver gemini_agents.orchestrate_load_tex) — nunca se usa
-    en un examen hasta que el docente lo publique."""
+    en un examen hasta que el docente lo publique. Solo sobre bancos del
+    PROPIO grupo (get_bank_or_404 sin allow_global): un docente no puede
+    cargarle contenido a un banco general, eso es exclusivo del admin."""
     get_bank_or_404(db, bank_id, group=teacher.group)
-
-    if not file.filename.lower().endswith(".tex"):
-        raise HTTPException(status_code=400, detail="El archivo debe ser un .tex")
-
-    content = file.file.read()
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=".tex", delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    job_id = str(uuid.uuid4())
-    with _LOAD_TEX_JOBS_LOCK:
-        _LOAD_TEX_JOBS[job_id] = {"status": "running", "result": None, "error": None, "teacher_id": teacher.id}
-    background_tasks.add_task(_run_load_tex_job, job_id, tmp_path, bank_id, max_problems)
-
-    return schemas.LoadTexJobStarted(job_id=job_id, status="running")
+    return _start_load_tex_job(background_tasks, teacher.id, bank_id, file, max_problems)
 
 
 @app.get("/api/teacher/load-jobs/{job_id}", response_model=schemas.LoadTexJobStatus)
-def get_load_tex_job(job_id: str, teacher: models.Student = Depends(get_current_teacher)):
+def get_load_tex_job(job_id: str, user: models.Student = Depends(get_current_teacher_or_admin)):
+    """Compartido entre docente y admin: cada uno solo puede ver el estado
+    de un job que él mismo arrancó (ver owner_id en _start_load_tex_job)."""
     with _LOAD_TEX_JOBS_LOCK:
         job = _LOAD_TEX_JOBS.get(job_id)
-    if job is None or job.get("teacher_id") != teacher.id:
+    if job is None or job.get("owner_id") != user.id:
         raise HTTPException(
             status_code=404,
-            detail="No se encontró ese trabajo de carga (¿el servidor se reinició, o es de otro docente?).",
+            detail="No se encontró ese trabajo de carga (¿el servidor se reinició, o es de otra cuenta?).",
         )
     return schemas.LoadTexJobStatus(status=job["status"], result=job["result"], error=job["error"])
 
@@ -1372,7 +1445,7 @@ def teacher_create_exam(
 
     for order, slot_in in enumerate(payload.slots):
         if slot_in.kind == "fixed":
-            problem = get_teacher_problem_or_404(db, slot_in.problem_id, teacher.group)
+            problem = get_teacher_problem_or_404(db, slot_in.problem_id, teacher.group, allow_global=True)
             if problem.status != "published":
                 raise HTTPException(
                     status_code=400,
@@ -1380,7 +1453,7 @@ def teacher_create_exam(
                 )
             db.add(models.ExamSlot(exam_id=exam.id, order=order, kind="fixed", problem_id=problem.id))
         elif slot_in.kind == "random":
-            bank = get_bank_or_404(db, slot_in.bank_id, group=teacher.group)
+            bank = get_bank_or_404(db, slot_in.bank_id, group=teacher.group, allow_global=True)
             published = [p for p in bank.problems if p.status == "published"]
             count = max(1, slot_in.count or 1)
             if count > len(published):
@@ -1694,6 +1767,148 @@ def admin_delete_teacher(
     db.delete(teacher)
     db.commit()
     return {"deleted": True, "teacher_id": teacher_id}
+
+
+# ---- Bancos GENERALES (gestionados por el admin, solo lectura para
+# docentes al armar un examen — ver get_bank_or_404/teacher_list_banks) ----
+
+
+@app.get("/api/admin/banks", response_model=list[schemas.BankOut])
+def admin_list_banks(db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)):
+    banks = db.query(models.ProblemBank).filter(models.ProblemBank.is_global.is_(True)).all()
+    return [
+        schemas.BankOut(
+            id=bank.id,
+            title=bank.title,
+            description=bank.description,
+            is_global=True,
+            problems=[
+                schemas.BankProblemOut(
+                    id=p.id, title=p.title, max_score=p.max_score, status=p.status, review_notes=p.review_notes
+                )
+                for p in bank.problems
+            ],
+        )
+        for bank in banks
+    ]
+
+
+@app.post("/api/admin/banks", response_model=schemas.BankOut)
+def admin_create_bank(
+    payload: schemas.TeacherCreateBankIn,
+    db: Session = Depends(get_db),
+    admin: models.Student = Depends(get_current_admin),
+):
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="El banco necesita un título.")
+
+    bank = models.ProblemBank(title=title, description=payload.description, group=None, is_global=True)
+    db.add(bank)
+    db.commit()
+    db.refresh(bank)
+    return schemas.BankOut(id=bank.id, title=bank.title, description=bank.description, is_global=True, problems=[])
+
+
+@app.delete("/api/admin/banks/{bank_id}")
+def admin_delete_bank(
+    bank_id: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    """Igual que teacher_delete_bank, pero sobre un banco general: se
+    rechaza si algún docente ya lo usa como fuente de sorteo en un examen, o
+    si alguno de sus problemas está en uso."""
+    bank = get_global_bank_or_404(db, bank_id)
+
+    blockers = []
+    slots_using_bank = db.query(models.ExamSlot).filter(models.ExamSlot.bank_id == bank_id).all()
+    for slot in slots_using_bank:
+        blockers.append(f"el banco se usa como sorteo aleatorio en el examen '{slot.exam.title}'")
+
+    for problem in bank.problems:
+        problem_blockers = get_problem_usage_blockers(db, problem.id)
+        if problem_blockers:
+            blockers.append(f"el problema '{problem.title}' " + "; ".join(problem_blockers))
+
+    if blockers:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se puede eliminar el banco '{bank.title}': " + "; ".join(blockers) + ".",
+        )
+
+    for problem in list(bank.problems):
+        db.delete(problem)
+    db.delete(bank)
+    db.commit()
+    return {"deleted": True, "bank_id": bank_id}
+
+
+@app.get("/api/admin/problems/{problem_id}", response_model=schemas.TeacherProblemDetailOut)
+def admin_get_problem_detail(
+    problem_id: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    problem = get_global_problem_or_404(db, problem_id)
+    return schemas.TeacherProblemDetailOut(
+        id=problem.id,
+        bank_id=problem.bank_id,
+        bank_title=problem.bank.title,
+        title=problem.title,
+        statement_md=problem.statement_md,
+        starter_code=problem.starter_code,
+        solution_code=problem.solution_code,
+        rubric=json.loads(problem.rubric or "[]"),
+        max_score=problem.max_score,
+        status=problem.status,
+        review_notes=problem.review_notes,
+        is_global=True,
+    )
+
+
+@app.post("/api/admin/problems/{problem_id}/publish", response_model=schemas.BankProblemOut)
+def admin_publish_problem(
+    problem_id: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    problem = get_global_problem_or_404(db, problem_id)
+    problem.status = "published"
+    db.commit()
+    return schemas.BankProblemOut(
+        id=problem.id,
+        title=problem.title,
+        max_score=problem.max_score,
+        status=problem.status,
+        review_notes=problem.review_notes,
+    )
+
+
+@app.delete("/api/admin/problems/{problem_id}")
+def admin_delete_problem(
+    problem_id: int, db: Session = Depends(get_db), admin: models.Student = Depends(get_current_admin)
+):
+    problem = get_global_problem_or_404(db, problem_id)
+    blockers = get_problem_usage_blockers(db, problem_id)
+    if blockers:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se puede eliminar '{problem.title}': " + "; ".join(blockers) + ".",
+        )
+    db.delete(problem)
+    db.commit()
+    return {"deleted": True, "problem_id": problem_id}
+
+
+@app.post("/api/admin/banks/{bank_id}/load-from-tex", response_model=schemas.LoadTexJobStarted)
+def admin_load_bank_from_tex(
+    bank_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    max_problems: int | None = Form(None),
+    db: Session = Depends(get_db),
+    admin: models.Student = Depends(get_current_admin),
+):
+    """Como teacher_load_bank_from_tex, pero sobre un banco general (ver
+    _start_load_tex_job); el admin sondea el mismo GET
+    /api/teacher/load-jobs/{job_id}."""
+    get_global_bank_or_404(db, bank_id)
+    return _start_load_tex_job(background_tasks, admin.id, bank_id, file, max_problems)
 
 
 # ---- Roster de estudiantes del grupo (docente) ----

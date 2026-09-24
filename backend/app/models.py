@@ -89,7 +89,14 @@ class ProblemBank(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    group = Column(Integer, nullable=True)  # grupo dueño del banco (1-4)
+    group = Column(Integer, nullable=True)  # grupo dueño del banco (1-4); None si is_global
+
+    # Banco "general" gestionado por el admin, visible (solo lectura) para
+    # TODOS los docentes al armar un examen, sin importar su grupo — para no
+    # obligar a un docente a evaluar según el criterio de otro. Un banco es
+    # o de un grupo (group != None, is_global=False) o global (group=None,
+    # is_global=True); nunca ambas cosas. Ver migrate_global_banks.py.
+    is_global = Column(Boolean, default=False, nullable=False)
 
     problems = relationship("Problem", back_populates="bank")
 

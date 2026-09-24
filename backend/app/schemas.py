@@ -199,6 +199,9 @@ class BankOut(BaseModel):
     title: str
     description: Optional[str] = None
     problems: list[BankProblemOut]
+    # True = banco general gestionado por el admin (solo lectura para
+    # docentes: pueden usarlo al armar un examen pero no editarlo/borrarlo).
+    is_global: bool = False
 
 
 class TeacherCreateBankIn(BaseModel):
@@ -255,6 +258,9 @@ class TeacherProblemDetailOut(BaseModel):
     max_score: float
     status: str
     review_notes: Optional[str] = None
+    # True = pertenece a un banco general del admin; el docente lo ve/prueba
+    # pero no puede publicarlo ni borrarlo (ver get_teacher_problem_or_404).
+    is_global: bool = False
 
 
 class ExamSlotIn(BaseModel):

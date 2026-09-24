@@ -277,6 +277,53 @@ export async function deleteAdminTeacher(teacherId) {
   return data;
 }
 
+// ---- Bancos generales (admin) — visibles en solo lectura para todos los
+// docentes al armar un examen, ver getTeacherBanks(). ----
+
+export async function getAdminBanks() {
+  const { data } = await client.get("/api/admin/banks");
+  return data;
+}
+
+export async function createAdminBank(payload) {
+  const { data } = await client.post("/api/admin/banks", payload);
+  return data;
+}
+
+export async function deleteAdminBank(bankId) {
+  const { data } = await client.delete(`/api/admin/banks/${bankId}`);
+  return data;
+}
+
+export async function getAdminProblemDetail(problemId) {
+  const { data } = await client.get(`/api/admin/problems/${problemId}`);
+  return data;
+}
+
+export async function publishAdminProblem(problemId) {
+  const { data } = await client.post(`/api/admin/problems/${problemId}/publish`);
+  return data;
+}
+
+export async function deleteAdminProblem(problemId) {
+  const { data } = await client.delete(`/api/admin/problems/${problemId}`);
+  return data;
+}
+
+// Igual que loadBankFromTex, pero sobre un banco general: arranca el mismo
+// pipeline de agentes en segundo plano y devuelve {job_id, status} — se
+// sondea con el mismo getLoadTexJobStatus (endpoint compartido con docentes,
+// cada quien solo ve el estado de su propio job).
+export async function loadAdminBankFromTex(bankId, file, maxProblems) {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (maxProblems) formData.append("max_problems", maxProblems);
+  const { data } = await client.post(`/api/admin/banks/${bankId}/load-from-tex`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
 // ---- Roster de estudiantes (docente) ----
 
 export async function getTeacherStudents() {

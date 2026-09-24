@@ -399,7 +399,16 @@ AGENT1_BATCH_SIZE = int(os.environ.get("GEMINI_AGENT1_BATCH_SIZE", "4"))
 
 _CLOZE_BLOCK_RE = re.compile(r"\\begin\{cloze\}.*?\\end\{cloze\}", re.DOTALL)
 _ENV_TOKEN_RE = re.compile(r"\\begin\{([a-zA-Z*]+)\}|\\end\{([a-zA-Z*]+)\}|\\item\b")
-_SUBSECTION_RE = re.compile(r"\\subsection\*?\{[^}]*\}")
+# Se prueban en este orden (más específico primero): un documento con
+# \section*{Título} + \subsection*{1.1}, \subsection*{1.2}... (título a nivel
+# section, ejercicios a nivel subsection, como el .tex real que reveló este
+# bug) debe partirse por subsection, NUNCA mezclar ambos niveles en un mismo
+# intento — si se buscaran section Y subsection a la vez, el propio título
+# quedaría como un "ejercicio" vacío separado del primero real.
+_HEADING_LEVEL_RES = [
+    re.compile(r"\\subsection\*?\{[^}]*\}"),
+    re.compile(r"\\section\*?\{[^}]*\}"),
+]
 
 
 def _identity_wrap(body: str) -> str:
@@ -419,8 +428,9 @@ def _split_cloze_blocks(tex_source: str) -> tuple[str, list[str], Callable[[str]
     return preamble, blocks, _identity_wrap
 
 
-def _split_by_subsections(tex_source: str) -> tuple[str, list[str], Callable[[str], str]] | None:
-    """.tex donde cada numeral empieza con \\subsection*{1.1} (o \\subsection{...})
+def _split_by_headings(tex_source: str) -> tuple[str, list[str], Callable[[str], str]] | None:
+    """.tex donde cada numeral empieza con su propio encabezado (\\subsection*{1.1},
+    \\subsection*{1.2}... o, si no hay subsection, \\section*{1}, \\section*{2}...)
     y trae SU PROPIO \\begin{enumerate}[label=\\alph*)]...\\end{enumerate} interno
     para los incisos a)/b)/c) — a diferencia de _split_plain_enumerate, aquí NO hay
     un enumerate de nivel superior que abarque todos los numerales: cada uno tiene
@@ -430,17 +440,28 @@ def _split_by_subsections(tex_source: str) -> tuple[str, list[str], Callable[[st
     numeral) y los trata como si fueran los ejercicios de todo el archivo,
     descartando en silencio todo lo que viene después — encontrado el
     2026-09-24 con un .tex real: de 10 numerales solo se procesó el primero.
-    Devuelve None si hay menos de 2 \\subsection (.tex con otro formato)."""
-    matches = list(_SUBSECTION_RE.finditer(tex_source))
-    if len(matches) < 2:
-        return None
-    preamble = tex_source[: matches[0].start()]
-    end_doc = tex_source.find(r"\end{document}")
-    bodies = []
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else (end_doc if end_doc != -1 else len(tex_source))
-        bodies.append(tex_source[m.start() : end])
-    return preamble, bodies, _identity_wrap
+
+    Se prueba subsection y section por separado, NUNCA juntos en el mismo
+    intento (ver _HEADING_LEVEL_RES): un documento con \\section*{Título} +
+    \\subsection*{1.1}... (título a nivel section, ejercicios a nivel
+    subsection) debe partirse SOLO por subsection — si se buscaran ambos
+    niveles a la vez, ese título de section quedaría como un "ejercicio"
+    vacío separado del numeral 1.1.
+
+    Devuelve None si ningún nivel de encabezado tiene al menos 2 apariciones
+    (.tex con otro formato)."""
+    for heading_re in _HEADING_LEVEL_RES:
+        matches = list(heading_re.finditer(tex_source))
+        if len(matches) < 2:
+            continue
+        preamble = tex_source[: matches[0].start()]
+        end_doc = tex_source.find(r"\end{document}")
+        bodies = []
+        for i, m in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else (end_doc if end_doc != -1 else len(tex_source))
+            bodies.append(tex_source[m.start() : end])
+        return preamble, bodies, _identity_wrap
+    return None
 
 
 def _split_plain_enumerate(tex_source: str) -> tuple[str, list[str], Callable[[str], str]] | None:
@@ -496,7 +517,7 @@ def _split_tex_into_batches(tex_source: str, batch_size: int) -> list[str] | Non
     PRIMER enumerate del documento —los incisos del numeral 1.1— y los trate como
     si fueran los ejercicios de TODO el archivo, descartando en silencio 1.2 en
     adelante. Probar \\subsection primero evita ese caso."""
-    split = _split_by_subsections(tex_source) or _split_cloze_blocks(tex_source) or _split_plain_enumerate(tex_source)
+    split = _split_by_headings(tex_source) or _split_cloze_blocks(tex_source) or _split_plain_enumerate(tex_source)
     if split is None:
         return None
     preamble, bodies, wrap = split

@@ -172,14 +172,23 @@ export async function getTeacherProblemDetail(problemId) {
   return data;
 }
 
+// Arranca el pipeline de agentes IA en el servidor y devuelve de inmediato
+// {job_id, status}: NO espera a que termine (puede tardar varios minutos con
+// varios numerales) — dejar una sola conexión HTTP abierta todo ese tiempo
+// no es seguro, Cloudflare y los navegadores la cortan antes. Hay que
+// sondear getLoadTexJobStatus(job_id) hasta que termine (ver TeacherBanks.jsx).
 export async function loadBankFromTex(bankId, file, maxProblems) {
   const formData = new FormData();
   formData.append("file", file);
   if (maxProblems) formData.append("max_problems", maxProblems);
   const { data } = await client.post(`/api/teacher/banks/${bankId}/load-from-tex`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
-    timeout: 10 * 60 * 1000, // el pipeline de agentes IA puede tardar varios minutos
   });
+  return data;
+}
+
+export async function getLoadTexJobStatus(jobId) {
+  const { data } = await client.get(`/api/teacher/load-jobs/${jobId}`);
   return data;
 }
 

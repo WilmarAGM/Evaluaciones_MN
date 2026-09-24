@@ -226,6 +226,23 @@ class LoadTexResultOut(BaseModel):
     tokens_today: int
 
 
+class LoadTexJobStarted(BaseModel):
+    job_id: str
+    status: str = "running"
+
+
+class LoadTexJobStatus(BaseModel):
+    # "running" | "done" | "error" — el frontend sondea este endpoint hasta
+    # que deje de ser "running" (ver TeacherBanks.jsx). Un .tex con varios
+    # numerales puede tardar varios minutos en el pipeline de 4 agentes IA:
+    # dejar la conexión HTTP original abierta todo ese tiempo no es seguro
+    # (Cloudflare y navegadores cortan conexiones ociosas mucho antes),
+    # así que la carga corre en segundo plano y esto es lo único que se sondea.
+    status: str
+    result: Optional[LoadTexResultOut] = None
+    error: Optional[str] = None
+
+
 class TeacherProblemDetailOut(BaseModel):
     id: int
     bank_id: int

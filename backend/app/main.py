@@ -4,11 +4,13 @@ import logging
 import os
 import random
 import tempfile
+import threading
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +19,7 @@ from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
 from . import models, schemas, executor
-from .database import get_db, Base, engine
+from .database import get_db, Base, engine, SessionLocal
 from .gemini_agents import orchestrate_load_tex
 from .gemini_quota import QuotaExceededError, get_usage_today
 from .import_students import _normalize_name
@@ -1249,20 +1251,72 @@ def teacher_create_bank(
     return schemas.BankOut(id=bank.id, title=bank.title, description=bank.description, problems=[])
 
 
-@app.post("/api/teacher/banks/{bank_id}/load-from-tex", response_model=schemas.LoadTexResultOut)
+_LOAD_TEX_JOBS: dict[str, dict] = {}
+_LOAD_TEX_JOBS_LOCK = threading.Lock()
+
+
+def _run_load_tex_job(job_id: str, tmp_path: str, bank_id: int, max_problems: int | None) -> None:
+    """Corre en segundo plano (ver BackgroundTasks abajo), con su PROPIA
+    sesión de base de datos: la `db` de la petición original se cierra en
+    cuanto el endpoint responde, mucho antes de que esto termine. Un .tex de
+    varios numerales puede tardar varios minutos en el pipeline de 4 agentes
+    IA — dejar eso corriendo dentro de la petición HTTP original no es
+    seguro (Cloudflare y los navegadores cortan conexiones que no responden
+    en menos de un par de minutos; el docente ve "no se pudo cargar el
+    archivo" aunque el pipeline siga trabajando y termine bien del otro
+    lado, encontrado el 2026-09-24 en producción)."""
+    job_db = SessionLocal()
+    try:
+        result = orchestrate_load_tex(tmp_path, bank_id, job_db, max_problems=max_problems)
+        usage = get_usage_today()
+        job_result = schemas.LoadTexResultOut(
+            bank_id=result["bank_id"],
+            created=result["created"],
+            skipped=result["skipped"],
+            calls_today=usage["calls"],
+            tokens_today=usage["tokens"],
+        )
+        with _LOAD_TEX_JOBS_LOCK:
+            # .update(), NUNCA reemplazar el dict entero: pisaría 'teacher_id'
+            # (puesto al crear el job) y el propio docente que lo lanzó
+            # recibiría un 404 al consultarlo, ver get_load_tex_job.
+            _LOAD_TEX_JOBS[job_id].update({"status": "done", "result": job_result, "error": None})
+    except QuotaExceededError as e:
+        with _LOAD_TEX_JOBS_LOCK:
+            _LOAD_TEX_JOBS[job_id].update({
+                "status": "error",
+                "result": None,
+                "error": f"Se agotó el cupo/crédito de la API de Gemini (avisa Google, no un límite propio): {e}.",
+            })
+    except Exception:
+        logger.exception("error en el trabajo de carga de .tex (job_id=%s, bank_id=%s)", job_id, bank_id)
+        with _LOAD_TEX_JOBS_LOCK:
+            _LOAD_TEX_JOBS[job_id].update({
+                "status": "error",
+                "result": None,
+                "error": "Ocurrió un error interno cargando el archivo. Intenta de nuevo; si persiste, avísale al soporte.",
+            })
+    finally:
+        job_db.close()
+        os.unlink(tmp_path)
+
+
+@app.post("/api/teacher/banks/{bank_id}/load-from-tex", response_model=schemas.LoadTexJobStarted)
 def teacher_load_bank_from_tex(
     bank_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     max_problems: int | None = Form(None),
     db: Session = Depends(get_db),
     teacher: models.Student = Depends(get_current_teacher),
 ):
-    """Sube un .tex y corre el pipeline de 4 agentes IA (Gemini) para
-    generar problemas dentro de este banco. Igual que el CLI
-    load_problems_from_tex.py: todo entra como status="draft" (ver
-    gemini_agents.orchestrate_load_tex) — nunca se usa en un examen hasta
-    que el docente lo publique. Llamada síncrona: puede tardar varios
-    minutos si hay varios problemas en el .tex."""
+    """Sube un .tex y ARRANCA en segundo plano el pipeline de 4 agentes IA
+    (Gemini) para generar problemas dentro de este banco — devuelve de
+    inmediato un job_id; el frontend sondea GET
+    /api/teacher/load-jobs/{job_id} hasta que termine (ver _run_load_tex_job).
+    Igual que el CLI load_problems_from_tex.py: todo entra como
+    status="draft" (ver gemini_agents.orchestrate_load_tex) — nunca se usa
+    en un examen hasta que el docente lo publique."""
     get_bank_or_404(db, bank_id, group=teacher.group)
 
     if not file.filename.lower().endswith(".tex"):
@@ -1273,24 +1327,24 @@ def teacher_load_bank_from_tex(
         tmp.write(content)
         tmp_path = tmp.name
 
-    try:
-        result = orchestrate_load_tex(tmp_path, bank_id, db, max_problems=max_problems)
-    except QuotaExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Se agotó el cupo/crédito de la API de Gemini (avisa Google, no un límite propio): {e}.",
-        )
-    finally:
-        os.unlink(tmp_path)
+    job_id = str(uuid.uuid4())
+    with _LOAD_TEX_JOBS_LOCK:
+        _LOAD_TEX_JOBS[job_id] = {"status": "running", "result": None, "error": None, "teacher_id": teacher.id}
+    background_tasks.add_task(_run_load_tex_job, job_id, tmp_path, bank_id, max_problems)
 
-    usage = get_usage_today()
-    return schemas.LoadTexResultOut(
-        bank_id=result["bank_id"],
-        created=result["created"],
-        skipped=result["skipped"],
-        calls_today=usage["calls"],
-        tokens_today=usage["tokens"],
-    )
+    return schemas.LoadTexJobStarted(job_id=job_id, status="running")
+
+
+@app.get("/api/teacher/load-jobs/{job_id}", response_model=schemas.LoadTexJobStatus)
+def get_load_tex_job(job_id: str, teacher: models.Student = Depends(get_current_teacher)):
+    with _LOAD_TEX_JOBS_LOCK:
+        job = _LOAD_TEX_JOBS.get(job_id)
+    if job is None or job.get("teacher_id") != teacher.id:
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontró ese trabajo de carga (¿el servidor se reinició, o es de otro docente?).",
+        )
+    return schemas.LoadTexJobStatus(status=job["status"], result=job["result"], error=job["error"])
 
 
 @app.post("/api/teacher/exams", response_model=schemas.TeacherExamListOut)

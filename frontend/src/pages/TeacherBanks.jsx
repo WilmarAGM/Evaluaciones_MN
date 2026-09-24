@@ -4,12 +4,70 @@ import { useAuth } from "../AuthContext";
 import * as api from "../api";
 import ChangePasswordForm from "../components/ChangePasswordForm";
 
+const LOAD_JOB_POLL_MS = 4000;
+const loadJobStorageKey = (bankId) => `load_tex_job_${bankId}`;
+
 function BankTexUploader({ bank, onLoaded }) {
   const [file, setFile] = useState(null);
   const [maxProblems, setMaxProblems] = useState("");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+
+  // Sondea el estado del trabajo hasta que deje de estar "running" — el
+  // pipeline corre en segundo plano en el servidor (ver main.py), puede
+  // tardar varios minutos con varios numerales. El job_id se guarda en
+  // localStorage (no solo en memoria) para que, si el docente recarga la
+  // página por impaciencia -como pasó en producción antes de este cambio,
+  // cuando la conexión se cortaba y parecía un error aunque el pipeline
+  // seguía trabajando bien del otro lado-, retome el sondeo en vez de
+  // perder de vista el progreso.
+  async function pollJob(jobId) {
+    try {
+      localStorage.setItem(loadJobStorageKey(bank.id), jobId);
+    } catch {
+      /* localStorage no disponible: el sondeo igual funciona, solo no sobrevive un recargo */
+    }
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, LOAD_JOB_POLL_MS));
+      let job;
+      try {
+        job = await api.getLoadTexJobStatus(jobId);
+      } catch (err) {
+        setError(err.response?.data?.detail || "Se perdió la conexión con el trabajo de carga.");
+        break;
+      }
+      if (job.status === "running") continue;
+      if (job.status === "error") {
+        setError(job.error || "No se pudo cargar el archivo.");
+      } else {
+        setResult(job.result);
+        onLoaded(bank.id, job.result.created);
+      }
+      break;
+    }
+    try {
+      localStorage.removeItem(loadJobStorageKey(bank.id));
+    } catch {
+      /* nada que limpiar si no hay localStorage */
+    }
+  }
+
+  // Al montar (incluida una recarga de página), retoma el sondeo de un
+  // trabajo que haya quedado a medias para este banco.
+  useEffect(() => {
+    let savedJobId = null;
+    try {
+      savedJobId = localStorage.getItem(loadJobStorageKey(bank.id));
+    } catch {
+      /* sin localStorage, no hay nada que retomar */
+    }
+    if (savedJobId) {
+      setUploading(true);
+      pollJob(savedJobId).finally(() => setUploading(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bank.id]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -21,9 +79,8 @@ function BankTexUploader({ bank, onLoaded }) {
     setResult(null);
     setUploading(true);
     try {
-      const res = await api.loadBankFromTex(bank.id, file, maxProblems ? Number(maxProblems) : undefined);
-      setResult(res);
-      onLoaded(bank.id, res.created);
+      const { job_id } = await api.loadBankFromTex(bank.id, file, maxProblems ? Number(maxProblems) : undefined);
+      await pollJob(job_id);
     } catch (err) {
       setError(err.response?.data?.detail || "No se pudo cargar el archivo.");
     } finally {
@@ -59,7 +116,8 @@ function BankTexUploader({ bank, onLoaded }) {
       {uploading && (
         <p className="text-xs text-slate-500 mt-2">
           Corriendo el pipeline de agentes (parsear, resolver, armar y auditar rúbrica)... puede tardar
-          varios minutos. No cierres esta pestaña.
+          varios minutos. El trabajo sigue en el servidor aunque cierres o recargues esta página; al
+          volver a esta pantalla retoma el progreso solo.
         </p>
       )}
       {error && <p className="text-xs text-rose-400 mt-2">{error}</p>}

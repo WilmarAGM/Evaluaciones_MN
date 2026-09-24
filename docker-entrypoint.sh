@@ -39,9 +39,15 @@ echo "--- Datos semilla (idempotentes) ---"
 python -m app.seed
 # import_students (roster legado LMN.xls) ya NO corre al arrancar: recrearía los
 # estudiantes que el admin/docente borró. Los rosters se cargan con el .xlsx del docente.
-python -m app.seed_taller
-python -m app.seed_parcial2
-python -m app.seed_taller_raices
+#
+# seed_taller / seed_parcial2 / seed_taller_raices TAMPOCO corren al arrancar
+# (encontrado 2026-09-24): cada uno solo verifica "¿ya existe un examen/banco
+# con este título?" antes de crear, así que si un docente borraba un examen o
+# banco a propósito, el SIGUIENTE reinicio del contenedor (cualquier
+# despliegue nuevo) lo recreaba solo, deshaciendo el borrado sin avisar. Para
+# cargar ese contenido de fábrica (solo hace falta en una base nueva, o si de
+# verdad se quiere restaurar uno de estos exámenes/bancos en particular), se
+# corre a mano: docker exec evaluaciones-mn python -m app.seed_taller (etc.)
 
 echo "--- Arrancando uvicorn ---"
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

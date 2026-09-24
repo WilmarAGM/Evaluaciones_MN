@@ -329,9 +329,14 @@ enunciado lo pide con esas palabras.
 numérico) SÍ es una pregunta legítima con resultado numérico: agrega una variable_to_check tipo \
 "numero_de_raices" (un entero) — el agente 2 la calculará escaneando la función, no hace falta que \
 el enunciado revele cómo contar.
-- Una variable cuyo valor esperado es un vector o una matriz (la solución de un sistema, una matriz \
-de iteración de Jacobi/Gauss-Seidel/SOR, etc.) lleva is_matrix=true en variables_to_check y su \
-description debe decir la forma esperada (p.ej. "vector de 3 componentes", "matriz 3x3").
+- Una variable cuyo valor esperado es un vector, una matriz, O UNA LISTA de varios resultados (la \
+solución de un sistema, una matriz de iteración de Jacobi/Gauss-Seidel/SOR, la lista de iteraciones \
+que tomó cada una de varias raíces, la lista de las raíces mismas, etc. — cualquier cosa que en \
+Python sea una lista, no un solo número) lleva is_matrix=true en variables_to_check y su description \
+debe decir la forma esperada (p.ej. "vector de 3 componentes", "matriz 3x3", "lista con una \
+iteración por cada raíz"). Si dudas entre partir la pregunta en variables separadas (una por raíz) o \
+usar una sola variable de lista, PREFIERE variables separadas cuando el número de resultados es fijo \
+y pequeño (2-4) — es más robusto para calificar.
 - sympy SÍ está disponible para el estudiante como herramienta de pasos analíticos (derivar, \
 factorizar, simplificar, y luego sympy.lambdify para volver la expresión numérica) — esto no es un \
 atajo para resolver el problema, así que puede mencionarse en el enunciado como una forma válida de \
@@ -696,12 +701,18 @@ def build_and_validate_rubric(problem: dict, solution_code: str, rubric_proposal
         if "error" in entry or entry.get("value") is None:
             raise RuntimeError(f"la solución no definió la variable '{c['variable']}': {entry.get('error', 'sin valor')}")
         raw = entry["value"]
-        if c.pop("_is_matrix"):
-            # Vector/matriz: ya llega como lista (anidada si es 2D) desde el
-            # ejecutor (numpy .tolist()); se guarda tal cual y se compara por
-            # componente (ver executor.values_close), no se fuerza a float().
-            if not isinstance(raw, (list, tuple)):
-                raise RuntimeError(f"la variable '{c['variable']}' debía ser un vector/matriz y no lo es: {raw!r}")
+        # Vector/matriz/lista de resultados: llega como lista (anidada si es
+        # 2D) desde el ejecutor (numpy .tolist()); se guarda tal cual y se
+        # compara por componente (ver executor.values_close), no se fuerza a
+        # float(). Se detecta por el TIPO real del valor, no solo por
+        # is_matrix=true del agente 1 — encontrado el 2026-09-24: un problema
+        # de "cuente las iteraciones de cada raíz" devolvía una lista de
+        # enteros (iteraciones_lista) que el agente 1 no había marcado como
+        # is_matrix, y con pago por uso cada intento fallido cuesta dinero de
+        # verdad (este caso concreto: 7 llamadas, ~43.6k tokens, 0 problemas
+        # creados) — más vale que el código detecte el tipo real en vez de
+        # confiar en que el agente 1 siempre lo marque bien.
+        if c.pop("_is_matrix") or isinstance(raw, (list, tuple)):
             c["expected"] = raw
             c["tolerance"] = 1e-4
         else:

@@ -172,7 +172,11 @@ def _get_client() -> genai.Client:
 
 
 def _model() -> str:
-    return os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
+    # gemini-3.5-flash: elegido por el usuario 2026-09-24 (antes:
+    # gemini-flash-lite-latest). Verificado en vivo contra la API que soporta
+    # generateContent + response_schema (salida estructurada, la usan los 4
+    # agentes) y que el pipeline completo produce rúbricas válidas.
+    return os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 
 def _call_gemini(prompt: str, system: str, response_schema: type[BaseModel] | None = None):

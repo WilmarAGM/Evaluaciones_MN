@@ -399,6 +399,7 @@ AGENT1_BATCH_SIZE = int(os.environ.get("GEMINI_AGENT1_BATCH_SIZE", "4"))
 
 _CLOZE_BLOCK_RE = re.compile(r"\\begin\{cloze\}.*?\\end\{cloze\}", re.DOTALL)
 _ENV_TOKEN_RE = re.compile(r"\\begin\{([a-zA-Z*]+)\}|\\end\{([a-zA-Z*]+)\}|\\item\b")
+_SUBSECTION_RE = re.compile(r"\\subsection\*?\{[^}]*\}")
 
 
 def _identity_wrap(body: str) -> str:
@@ -416,6 +417,30 @@ def _split_cloze_blocks(tex_source: str) -> tuple[str, list[str], Callable[[str]
         return None
     preamble = tex_source[: tex_source.index(blocks[0])]
     return preamble, blocks, _identity_wrap
+
+
+def _split_by_subsections(tex_source: str) -> tuple[str, list[str], Callable[[str], str]] | None:
+    """.tex donde cada numeral empieza con \\subsection*{1.1} (o \\subsection{...})
+    y trae SU PROPIO \\begin{enumerate}[label=\\alph*)]...\\end{enumerate} interno
+    para los incisos a)/b)/c) — a diferencia de _split_plain_enumerate, aquí NO hay
+    un enumerate de nivel superior que abarque todos los numerales: cada uno tiene
+    el suyo, estructuralmente idéntico al de cualquier otro numeral. Probada
+    ANTES que _split_plain_enumerate por eso mismo: sin esto, esa función
+    encuentra el primer enumerate del documento entero (los incisos del PRIMER
+    numeral) y los trata como si fueran los ejercicios de todo el archivo,
+    descartando en silencio todo lo que viene después — encontrado el
+    2026-09-24 con un .tex real: de 10 numerales solo se procesó el primero.
+    Devuelve None si hay menos de 2 \\subsection (.tex con otro formato)."""
+    matches = list(_SUBSECTION_RE.finditer(tex_source))
+    if len(matches) < 2:
+        return None
+    preamble = tex_source[: matches[0].start()]
+    end_doc = tex_source.find(r"\end{document}")
+    bodies = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else (end_doc if end_doc != -1 else len(tex_source))
+        bodies.append(tex_source[m.start() : end])
+    return preamble, bodies, _identity_wrap
 
 
 def _split_plain_enumerate(tex_source: str) -> tuple[str, list[str], Callable[[str], str]] | None:
@@ -457,13 +482,21 @@ def _split_plain_enumerate(tex_source: str) -> tuple[str, list[str], Callable[[s
 def _split_tex_into_batches(tex_source: str, batch_size: int) -> list[str] | None:
     """Parte el .tex en lotes de a lo sumo `batch_size` ejercicios/numerales por
     llamada al agente 1 (probando los formatos soportados en orden: Moodle cloze,
-    luego enumerate con nivel superior), cada lote con el preámbulo puesto UNA sola
-    vez (no uno por ejercicio, para no inflar tokens). Mandarle al agente 1 todo el
-    .tex de una sola vez cuando trae muchos ejercicios le hace mezclar/alucinar datos
-    entre ellos con más frecuencia; en lotes chicos es más confiable. Devuelve None si
-    ningún formato aplica (.tex con un formato distinto, o con un solo ejercicio) —
-    en ese caso el llamador manda el archivo completo tal cual, como antes."""
-    split = _split_cloze_blocks(tex_source) or _split_plain_enumerate(tex_source)
+    \\subsection por numeral, luego enumerate con nivel superior), cada lote con
+    el preámbulo puesto UNA sola vez (no uno por ejercicio, para no inflar
+    tokens). Mandarle al agente 1 todo el .tex de una sola vez cuando trae muchos
+    ejercicios le hace mezclar/alucinar datos entre ellos con más frecuencia; en
+    lotes chicos es más confiable. Devuelve None si ningún formato aplica (.tex
+    con un formato distinto, o con un solo ejercicio) — en ese caso el llamador
+    manda el archivo completo tal cual, como antes.
+
+    \\subsection se prueba ANTES que el enumerate de nivel superior: un .tex con
+    \\subsection*{1.1}, \\subsection*{1.2}... (cada uno con su propio enumerate
+    interno para los incisos a/b/c) hace que _split_plain_enumerate encuentre el
+    PRIMER enumerate del documento —los incisos del numeral 1.1— y los trate como
+    si fueran los ejercicios de TODO el archivo, descartando en silencio 1.2 en
+    adelante. Probar \\subsection primero evita ese caso."""
+    split = _split_by_subsections(tex_source) or _split_cloze_blocks(tex_source) or _split_plain_enumerate(tex_source)
     if split is None:
         return None
     preamble, bodies, wrap = split
@@ -526,6 +559,16 @@ sympy.nsolve como LA forma de resolver el problema; solo como paso previo para d
 valores), calcúlalo escaneando la función en una malla fina del dominio dado (p.ej. \
 `np.linspace(a, b, 2000)`) y contando cambios de signo consecutivos de f (para raíces) o de g(x)-x \
 (para puntos fijos de g) — NO uses una rutina de biblioteca para esto, es una cuenta directa.
+- Si el enunciado pide reportar el NÚMERO DE ITERACIONES de un método de intervalo (bisección, falsa \
+posición, etc.), el intervalo [a,b] que le pases a la rutina en tu solución de referencia DEBE ser uno \
+"natural" — de los que un estudiante escogería mirando una gráfica a simple vista, con extremos \
+redondos (p.ej. [0, 1], [1.5, 2], [-2, -1]) — NUNCA el resultado de escanear una malla fina para hallar \
+el intervalo bracketing más angosto posible (eso da un intervalo casi del tamaño de xtol y, por lo \
+tanto, un número de iteraciones artificialmente bajo que ningún estudiante razonable replicaría, \
+haciendo reprobar cualquier solución correcta que use un intervalo distinto pero igual de válido). Si \
+necesitas escanear para LOCALIZAR dónde está la raíz, hazlo, pero luego para el llamado real usa el \
+intervalo natural más cercano que aún tenga cambio de signo, no los dos puntos consecutivos exactos \
+del escaneo.
 - Si una variable pedida es una matriz de iteración de Jacobi/Gauss-Seidel/SOR (is_matrix=true), \
 constrúyela con numpy a partir de A=D-L-U, usando EXACTAMENTE estas fórmulas (D=np.diag(np.diag(A)), \
 L=-np.tril(A,-1), U=-np.triu(A,1)): T_jacobi = np.linalg.inv(D) @ (L+U); \

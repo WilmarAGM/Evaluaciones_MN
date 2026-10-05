@@ -996,11 +996,17 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
     )
 
     is_random = bool(exam.slots)
-    num_slots = len(exam.slots) if is_random else len(exam.problems)
+    # Un slot aleatorio con count=N le asigna N problemas a cada estudiante
+    # (ver resolve_exam_problems), así que ocupa N posiciones/columnas aquí.
+    slot_positions = []
+    if is_random:
+        for slot in sorted(exam.slots, key=lambda s: s.order):
+            slot_positions.extend([slot] * (1 if slot.kind == "fixed" else max(slot.count or 1, 1)))
+    num_slots = len(slot_positions) if is_random else len(exam.problems)
     slot_titles = []
     slot_max_scores = []
     if is_random:
-        for i, slot in enumerate(sorted(exam.slots, key=lambda s: s.order)):
+        for i, slot in enumerate(slot_positions):
             rep = _slot_representative_problem(slot)
             slot_max_scores.append(rep.max_score if rep else 0.0)
             slot_titles.append(rep.title if slot.kind == "fixed" and rep else f"Ejercicio {i + 1} — banco {slot.bank.title}")
@@ -1028,7 +1034,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
         else:
             problems = exam.problems
 
-        for idx, problem in enumerate(problems):
+        for idx, problem in enumerate(problems[:num_slots] if is_random else problems):
             if problem is None:
                 row_scores.append(0.0)
                 continue
@@ -1080,7 +1086,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
     finished_n = status_counts["finished"]
     problems_out = []
     if is_random:
-        for idx, slot in enumerate(sorted(exam.slots, key=lambda s: s.order)):
+        for idx, slot in enumerate(slot_positions):
             scores = problem_scores[idx]
             avg_p = sum(scores) / len(scores) if scores else 0.0
             # Desglose por criterio omitido a propósito para slots aleatorios:

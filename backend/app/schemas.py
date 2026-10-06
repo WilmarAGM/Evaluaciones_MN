@@ -118,6 +118,19 @@ class ProblemResultOut(BaseModel):
     code: Optional[str] = None
     stdout: Optional[str] = None
     stderr: Optional[str] = None
+    # Solo en la vista del docente (dashboard): con slots aleatorios cada
+    # estudiante puede tener un problema distinto.
+    statement_md: Optional[str] = None
+    # Corrección manual del docente: `score` ya es la nota efectiva; aquí va
+    # la automática original y el comentario (visible también al estudiante).
+    auto_score: Optional[float] = None
+    manual: bool = False
+    manual_comment: Optional[str] = None
+
+
+class ManualScoreIn(BaseModel):
+    score: Optional[float] = None  # None = quitar la corrección y volver a la automática
+    comment: Optional[str] = None
 
 
 class ExamResultsOut(BaseModel):
@@ -185,6 +198,8 @@ class StudentRowOut(BaseModel):
     problem_scores: list[float]
     annulled: bool = False
     violations: int = 0
+    manual_adjusted: bool = False  # alguno de sus puntajes fue corregido a mano
+    manual_comments: list[str] = []
 
 
 class BankProblemOut(BaseModel):

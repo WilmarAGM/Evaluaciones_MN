@@ -89,6 +89,12 @@ export default function ResultsPage() {
                   {p.score.toFixed(1)} / {p.max_score}
                 </span>
               </div>
+              {p.manual && (
+                <p className="mb-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200/90">
+                  Nota corregida por el docente (calificación automática: {p.auto_score?.toFixed(1)}).
+                  {p.manual_comment && <span className="block mt-1 text-sky-100">“{p.manual_comment}”</span>}
+                </p>
+              )}
 
               {p.checks.map((check, idx) => (
                 <div key={idx} className="text-sm py-0.5">

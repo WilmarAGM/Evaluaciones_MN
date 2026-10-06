@@ -259,6 +259,15 @@ class Submission(Base):
     total_score = Column(Float, default=0.0)
     checks_report = Column(Text, default="[]")  # JSON: [{label, passed, points, max_points}, ...]
 
+    # Corrección manual del docente. Si manual_score no es None, REEMPLAZA a
+    # total_score en dashboard, export y resultados (total_score se conserva
+    # para poder revertir). Se borra sola si el estudiante cambia el código
+    # (ver _persist_submission / save_draft): la corrección era sobre otro código.
+    manual_score = Column(Float, nullable=True)
+    manual_comment = Column(Text, nullable=True)
+    manual_by = Column(Integer, nullable=True)  # id del docente (sin FK: Student.submissions se volvería ambigua)
+    manual_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)

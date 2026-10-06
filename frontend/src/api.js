@@ -145,6 +145,15 @@ export async function reinstateAttempt(examId, studentId) {
   return data;
 }
 
+// score = null quita la corrección y vuelve a la calificación automática.
+export async function setManualScore(examId, studentId, problemId, score, comment) {
+  const { data } = await client.put(
+    `/api/teacher/exams/${examId}/students/${studentId}/problems/${problemId}/score`,
+    { score, comment }
+  );
+  return data;
+}
+
 export async function releaseStudentSession(studentId) {
   const { data } = await client.post(`/api/teacher/students/${studentId}/release-session`);
   return data;

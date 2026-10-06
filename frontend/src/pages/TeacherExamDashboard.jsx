@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useState } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../AuthContext";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
+import rehypeKatex from "rehype-katex";
 import * as api from "../api";
 import ExamAccessPanel from "../components/ExamAccessPanel";
 
@@ -22,6 +26,83 @@ function StatCard({ label, value, accent }) {
       <p className={`text-2xl font-bold ${accent || "text-white"}`}>{value}</p>
       <p className="text-slate-500 text-xs mt-1">{label}</p>
     </div>
+  );
+}
+
+// Corrección manual del puntaje de un problema. Se guarda en la base de datos
+// y reemplaza la nota automática en el dashboard, el .xlsx y los resultados
+// del estudiante; "Quitar corrección" vuelve a la automática.
+function ManualScoreEditor({ examId, studentId, problem, onSaved }) {
+  const [score, setScore] = useState(problem.score);
+  const [comment, setComment] = useState(problem.manual_comment || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save(value) {
+    setSaving(true);
+    setError("");
+    try {
+      await api.setManualScore(examId, studentId, problem.problem_id, value, value === null ? null : comment);
+      await onSaved();
+    } catch (err) {
+      setError(err?.response?.data?.detail || "No se pudo guardar la corrección.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const value = Number(score);
+    if (score === "" || Number.isNaN(value) || value < 0 || value > problem.max_score) {
+      setError(`El puntaje debe estar entre 0 y ${problem.max_score}.`);
+      return;
+    }
+    save(value);
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      onClick={(e) => e.stopPropagation()}
+      className="border-b border-white/10 px-4 py-2 flex flex-wrap items-center gap-2 text-xs"
+    >
+      <span className="text-slate-400">Corregir puntaje:</span>
+      <input
+        type="number"
+        step="0.1"
+        min={0}
+        max={problem.max_score}
+        value={score}
+        onChange={(e) => setScore(e.target.value)}
+        className="w-20 rounded-lg bg-black/30 border border-white/10 px-2 py-1 text-white focus:outline-none focus:border-brand-400/60"
+      />
+      <span className="text-slate-500">/ {problem.max_score.toFixed(0)}</span>
+      <input
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="Observación (la ve el estudiante)"
+        className="flex-1 min-w-48 rounded-lg bg-black/30 border border-white/10 px-2 py-1 text-white placeholder:text-slate-500 focus:outline-none focus:border-brand-400/60"
+      />
+      <button
+        type="submit"
+        disabled={saving}
+        className="rounded-lg bg-brand-600/80 hover:bg-brand-600 px-3 py-1 font-medium text-white transition disabled:opacity-60"
+      >
+        {saving ? "Guardando..." : "Guardar"}
+      </button>
+      {problem.manual && (
+        <button
+          type="button"
+          onClick={() => save(null)}
+          disabled={saving}
+          className="rounded-lg border border-white/15 px-3 py-1 text-slate-200 hover:bg-white/5 transition disabled:opacity-60"
+        >
+          Quitar corrección
+        </button>
+      )}
+      {error && <span className="basis-full text-rose-400">{error}</span>}
+    </form>
   );
 }
 
@@ -62,6 +143,12 @@ export default function TeacherExamDashboard() {
     } catch (err) {
       setError(err?.response?.data?.detail || "No se pudo reactivar el intento.");
     }
+  }
+
+  async function refreshStudent(studentId) {
+    const data = await api.getTeacherStudentSubmissions(examId, studentId);
+    setDetailsById((prev) => ({ ...prev, [studentId]: data }));
+    await loadDashboard();
   }
 
   async function toggleStudent(studentId) {
@@ -242,6 +329,11 @@ export default function TeacherExamDashboard() {
                               {STATUS_LABEL[s.status]}
                             </span>
                           )}
+                          {s.manual_adjusted && (
+                            <span className="ml-2 text-xs text-sky-300" title="Tiene puntajes corregidos a mano">
+                              ✎ corregido
+                            </span>
+                          )}
                           {s.violations > 0 && (
                             <span className="ml-2 text-xs text-amber-400" title="Salidas de la ventana del examen">
                               ⚠ {s.violations}
@@ -289,9 +381,38 @@ export default function TeacherExamDashboard() {
                                     <div className="flex items-center justify-between px-4 py-2 bg-white/[0.03]">
                                       <span className="text-white text-sm font-medium">{p.title}</span>
                                       <span className="text-xs text-slate-400">
+                                        {p.manual && (
+                                          <span
+                                            className="mr-2 rounded-full border border-sky-500/30 bg-sky-500/15 px-2 py-0.5 text-sky-300"
+                                            title={p.manual_comment || ""}
+                                          >
+                                            Corregido · automático {p.auto_score?.toFixed(1)}
+                                          </span>
+                                        )}
                                         {p.score.toFixed(1)} / {p.max_score.toFixed(0)}
                                       </span>
                                     </div>
+                                    {!detail.annulled && (
+                                      <ManualScoreEditor
+                                        key={`${p.problem_id}-${p.score}-${p.manual}`}
+                                        examId={examId}
+                                        studentId={s.student_id}
+                                        problem={p}
+                                        onSaved={() => refreshStudent(s.student_id)}
+                                      />
+                                    )}
+                                    {p.statement_md && (
+                                      <details className="border-b border-white/10">
+                                        <summary className="cursor-pointer select-none px-4 py-2 text-xs text-brand-300 hover:text-brand-200">
+                                          Ver enunciado
+                                        </summary>
+                                        <div className="markdown-body px-4 pb-4 text-sm">
+                                          <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                                            {p.statement_md}
+                                          </ReactMarkdown>
+                                        </div>
+                                      </details>
+                                    )}
                                     {p.code ? (
                                       <>
                                         <pre className="text-xs text-slate-200 font-mono whitespace-pre-wrap bg-black/40 px-4 py-3 overflow-x-auto max-h-64 overflow-y-auto">

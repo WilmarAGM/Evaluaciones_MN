@@ -492,7 +492,12 @@ def student_problem_result(db: Session, student: models.Student, problem: models
         .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
         .first()
     )
-    score = submission.total_score if submission else 0.0
+    if submission is None:
+        score = 0.0
+    elif submission.manual_score is not None:
+        score = submission.manual_score
+    else:
+        score = submission.total_score or 0.0
     checks_report = json.loads(submission.checks_report) if submission else []
     return submission, score, checks_report
 
@@ -690,6 +695,7 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
                 code=submission.code if submission else None,
                 stdout=submission.stdout if submission else None,
                 stderr=submission.stderr if submission else None,
+                **_manual_fields(submission),
             )
         )
         total_score += score
@@ -704,6 +710,26 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
         annul_reason=status["annul_reason"],
         violations=status["violations"],
     )
+
+
+def _clear_manual_score(submission: models.Submission) -> None:
+    """La corrección manual valía para el código que el docente revisó; si el
+    estudiante lo cambia, vuelve a regir la calificación automática."""
+    submission.manual_score = None
+    submission.manual_comment = None
+    submission.manual_by = None
+    submission.manual_at = None
+
+
+def _manual_fields(submission) -> dict:
+    """Campos de corrección manual para ProblemResultOut."""
+    if submission is None:
+        return {}
+    return {
+        "auto_score": submission.total_score or 0.0,
+        "manual": submission.manual_score is not None,
+        "manual_comment": submission.manual_comment if submission.manual_score is not None else None,
+    }
 
 
 def _persist_submission(db: Session, student: models.Student, problem: models.Problem, code: str, result: dict, grading: dict) -> models.Submission:
@@ -739,6 +765,8 @@ def _persist_submission(db: Session, student: models.Student, problem: models.Pr
     if not submission:
         submission = models.Submission(student_id=student.id, problem_id=problem.id, code=code)
         db.add(submission)
+    elif submission.code != code:
+        _clear_manual_score(submission)
 
     submission.code = code
     submission.stdout = result["stdout"]
@@ -900,6 +928,8 @@ def save_draft(
         submission = models.Submission(student_id=student.id, problem_id=problem.id, code=payload.code)
         db.add(submission)
     else:
+        if submission.code != payload.code:
+            _clear_manual_score(submission)
         submission.code = payload.code
     db.commit()
     db.refresh(submission)
@@ -1063,6 +1093,8 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
 
         row_scores = []
         total = 0.0
+        manual_comments = []
+        manual_adjusted = False
         if is_random:
             # No crear un intento como efecto secundario de que el docente
             # mire el dashboard: si el estudiante no ha empezado, no hay
@@ -1076,7 +1108,11 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 row_scores.append(0.0)
                 continue
             key = idx if is_random else problem.id
-            _submission, score, checks_report = student_problem_result(db, student, problem)
+            submission, score, checks_report = student_problem_result(db, student, problem)
+            if submission is not None and submission.manual_score is not None and not annulled:
+                manual_adjusted = True
+                if submission.manual_comment:
+                    manual_comments.append(f"{problem.title}: {submission.manual_comment}")
             if annulled:
                 score, checks_report = 0.0, []
             row_scores.append(score)
@@ -1102,6 +1138,8 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 problem_scores=row_scores,
                 annulled=annulled,
                 violations=(attempt.violations or 0) if attempt else 0,
+                manual_adjusted=manual_adjusted,
+                manual_comments=manual_comments,
             )
         )
         if status == "finished":
@@ -1771,6 +1809,8 @@ def teacher_student_submissions(
                 code=submission.code if submission else None,
                 stdout=submission.stdout if submission else None,
                 stderr=submission.stderr if submission else None,
+                **_manual_fields(submission),
+                statement_md=problem.statement_md,
             )
         )
         total_score += score
@@ -1813,7 +1853,7 @@ def teacher_export_xlsx(
     headers = ["Documento", "Apellidos y nombre", "Correo", "Estado"]
     for problem in dashboard.problems:
         headers.append(f"{problem.title} ({problem.max_score:.0f} pts)")
-    headers += ["Total", "Máximo", "Nota (0-5)", "Salidas de ventana"]
+    headers += ["Total", "Máximo", "Nota (0-5)", "Salidas de ventana", "Corrección manual", "Observaciones"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -1831,6 +1871,8 @@ def teacher_export_xlsx(
                 row.max_score,
                 row.nota_5,
                 row.violations,
+                "Sí" if row.manual_adjusted else "",
+                " | ".join(row.manual_comments),
             ]
         )
 
@@ -1893,6 +1935,68 @@ def teacher_reinstate_attempt(
     db.commit()
     _regrade_attempt(db, student, exam)
     return {"reinstated": True, "student_id": student.id}
+
+
+@app.put("/api/teacher/exams/{exam_id}/students/{student_id}/problems/{problem_id}/score")
+def teacher_set_manual_score(
+    exam_id: int,
+    student_id: int,
+    problem_id: int,
+    payload: schemas.ManualScoreIn,
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Corrige a mano el puntaje de un estudiante en un problema (score=None lo
+    revierte a la calificación automática). Queda guardado en la entrega, así
+    que lo usan el dashboard, el .xlsx y los resultados del estudiante."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    student = _get_group_student_or_404(db, student_id, teacher.group)
+    attempt = peek_attempt(db, student, exam)
+
+    if exam.slots:
+        if attempt is None:
+            raise HTTPException(status_code=400, detail="El estudiante aún no ha iniciado este examen.")
+        problem_ids = {a.problem_id for a in attempt.assigned_problems}
+    else:
+        problem_ids = {p.id for p in exam.problems}
+    if problem_id not in problem_ids:
+        raise HTTPException(status_code=404, detail="Ese problema no forma parte del examen de este estudiante.")
+    if attempt is not None and attempt.annulled_at is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="El intento está anulado (nota 0). Reactívalo primero si quieres corregir la nota.",
+        )
+
+    problem = get_problem_or_404(db, problem_id)
+    submission = (
+        db.query(models.Submission)
+        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
+        .first()
+    )
+
+    if payload.score is None:
+        if submission is not None:
+            _clear_manual_score(submission)
+            db.commit()
+        return {"saved": True, "manual": False}
+
+    if not (0 <= payload.score <= problem.max_score):
+        raise HTTPException(
+            status_code=400, detail=f"El puntaje debe estar entre 0 y {problem.max_score:g}."
+        )
+    if submission is None:
+        # Sin entrega: el docente igual puede asignar puntos (p. ej. trabajo
+        # entregado por otro medio). Código vacío = "Sin entrega" en la vista.
+        submission = models.Submission(
+            student_id=student.id, problem_id=problem.id, code="", total_score=0.0, checks_report="[]"
+        )
+        db.add(submission)
+    submission.manual_score = round(payload.score, 2)
+    submission.manual_comment = (payload.comment or "").strip() or None
+    submission.manual_by = teacher.id
+    submission.manual_at = now()
+    db.commit()
+    return {"saved": True, "manual": True}
 
 
 # ---- Vistas de admin (gestión de cuentas docente, una por grupo) ----

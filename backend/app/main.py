@@ -132,6 +132,26 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def normalize_documento(raw) -> str:
+    """Forma canónica de un documento para comparar: Excel entrega números como
+    float (1023456789.0) y la gente escribe puntos o espacios (1.023.456.789)."""
+    if isinstance(raw, float) and raw.is_integer():
+        raw = int(raw)
+    return "".join(c for c in str(raw or "") if c.isalnum()).upper()
+
+
+def student_allowed_in_exam(exam: models.Exam, student: models.Student) -> bool:
+    """Si un estudiante (ya del grupo del examen) puede presentarlo. Exámenes
+    sin restricción: todos. Restringidos: solo los documentos de la lista."""
+    if not exam.restricted:
+        return True
+    doc = normalize_documento(student.documento)
+    return any(a.documento == doc for a in exam.allowed_students)
+
+
+NOT_ALLOWED_DETAIL = "No estás habilitado para presentar este examen. Habla con tu docente."
+
+
 def get_or_create_attempt(db: Session, student: models.Student, exam: models.Exam) -> models.ExamAttempt:
     attempt = (
         db.query(models.ExamAttempt)
@@ -139,6 +159,11 @@ def get_or_create_attempt(db: Session, student: models.Student, exam: models.Exa
         .first()
     )
     if not attempt:
+        # Solo se bloquea crear un intento NUEVO: quien ya empezó y luego es
+        # quitado de la lista puede terminar. El docente también pasa por aquí
+        # (vista previa de exámenes con sorteo) y nunca se restringe.
+        if student.role == "student" and not student_allowed_in_exam(exam, student):
+            raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
         # duration_seconds no se usa cuando exam.duration_minutes es None (examen sin
         # límite de tiempo), pero la columna es NOT NULL, así que igual guardamos un
         # valor coherente por si el examen luego se reconfigura con un límite.
@@ -478,6 +503,8 @@ def list_exams(db: Session = Depends(get_db), student: models.Student = Depends(
     results = []
     for exam in exams:
         attempt = peek_attempt(db, student, exam)
+        if attempt is None and not student_allowed_in_exam(exam, student):
+            continue
         if attempt is None:
             status = "not_started"
         else:
@@ -565,6 +592,8 @@ def build_exam_out(exam: models.Exam, problems: list[models.Problem]) -> schemas
 @app.get("/api/exams/{exam_id}", response_model=schemas.ExamOut)
 def get_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
     exam = get_exam_or_404(db, exam_id, group=student.group)
+    if not student_allowed_in_exam(exam, student) and peek_attempt(db, student, exam) is None:
+        raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
     return build_exam_out(exam, resolve_exam_problems(db, student, exam))
 
 
@@ -994,6 +1023,14 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
         .order_by(models.Student.full_name)
         .all()
     )
+    if exam.restricted:
+        # Solo los habilitados, más quien ya tenga un intento (fue quitado de
+        # la lista después de empezar: su trabajo sigue contando).
+        with_attempt = {
+            row.student_id
+            for row in db.query(models.ExamAttempt.student_id).filter(models.ExamAttempt.exam_id == exam.id).all()
+        }
+        students = [s for s in students if s.id in with_attempt or student_allowed_in_exam(exam, s)]
 
     is_random = bool(exam.slots)
     # Un slot aleatorio con count=N le asigna N problemas a cada estudiante
@@ -1150,6 +1187,7 @@ def _to_teacher_list_out(db: Session, exam: models.Exam) -> schemas.TeacherExamL
         duration_minutes=exam.duration_minutes,
         is_open=exam.is_open,
         max_violations=exam.max_violations or 0,
+        restricted=bool(exam.restricted),
         total_students=dashboard.total_students,
         not_started=dashboard.not_started,
         in_progress=dashboard.in_progress,
@@ -1487,6 +1525,175 @@ def teacher_toggle_exam_open(
     exam.is_open = not exam.is_open
     db.commit()
     return schemas.TeacherToggleOpenOut(exam_id=exam.id, is_open=exam.is_open)
+
+
+# ---- Habilitación por documento (exámenes restringidos, ver Exam.restricted) ----
+
+
+def _exam_access_out(db: Session, exam: models.Exam, **result) -> schemas.ExamAccessOut:
+    group_students = {
+        normalize_documento(s.documento): s
+        for s in db.query(models.Student)
+        .filter(models.Student.role == "student", models.Student.group == exam.group)
+        .all()
+    }
+    allowed = []
+    for entry in exam.allowed_students:
+        student = group_students.get(entry.documento)
+        allowed.append(
+            schemas.AllowedStudentOut(
+                documento=entry.documento,
+                student_id=student.id if student else None,
+                full_name=student.full_name if student else None,
+                email=student.email if student else None,
+            )
+        )
+    # Primero los que no corresponden a nadie (probable error de digitación), luego por nombre.
+    allowed.sort(key=lambda a: (a.student_id is not None, (a.full_name or "").lower(), a.documento))
+    return schemas.ExamAccessOut(exam_id=exam.id, restricted=bool(exam.restricted), allowed=allowed, **result)
+
+
+def _add_allowed_documentos(db: Session, exam: models.Exam, raw_docs) -> dict:
+    """Agrega documentos a la lista del examen (sin duplicar). Los que no
+    corresponden a ningún estudiante del grupo se guardan igual (puede que el
+    estudiante aún no tenga cuenta) pero se reportan en `unknown`."""
+    existing = {a.documento for a in exam.allowed_students}
+    group_docs = {
+        normalize_documento(row.documento)
+        for row in db.query(models.Student.documento)
+        .filter(models.Student.role == "student", models.Student.group == exam.group)
+        .all()
+    }
+    added, already, unknown = 0, 0, []
+    for raw in raw_docs:
+        doc = normalize_documento(raw)
+        if not doc:
+            continue
+        if doc in existing:
+            already += 1
+            continue
+        exam.allowed_students.append(models.ExamAllowedStudent(documento=doc))
+        existing.add(doc)
+        added += 1
+        if doc not in group_docs:
+            unknown.append(doc)
+    return {"added": added, "already": already, "unknown": unknown}
+
+
+def _read_documentos_from_sheet(filename: str, content: bytes) -> list:
+    """Lee la columna de documentos de un .xlsx/.xls: la que tenga un
+    encabezado que diga "documento" en la primera fila; si no hay, la primera
+    columna. Se descartan celdas sin ningún dígito (encabezados, notas)."""
+    name = filename.lower()
+    try:
+        if name.endswith(".xlsx"):
+            ws = load_workbook(io.BytesIO(content), data_only=True, read_only=True).active
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        elif name.endswith(".xls"):
+            import xlrd
+
+            sheet = xlrd.open_workbook(file_contents=content).sheet_by_index(0)
+            rows = [sheet.row_values(i) for i in range(sheet.nrows)]
+        else:
+            raise HTTPException(status_code=400, detail="El archivo debe ser un .xlsx o .xls")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="No se pudo leer el archivo de Excel")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+    col, start = 0, 0
+    for i, cell in enumerate(rows[0]):
+        if "documento" in str(cell or "").strip().lower():
+            col, start = i, 1
+            break
+
+    docs = []
+    for row in rows[start:]:
+        if col < len(row) and row[col] is not None:
+            value = row[col]
+            if any(c.isdigit() for c in normalize_documento(value)):
+                docs.append(value)
+    if not docs:
+        raise HTTPException(status_code=400, detail="No se encontraron documentos en el archivo")
+    return docs
+
+
+@app.get("/api/teacher/exams/{exam_id}/access", response_model=schemas.ExamAccessOut)
+def teacher_get_exam_access(
+    exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    return _exam_access_out(db, exam)
+
+
+@app.put("/api/teacher/exams/{exam_id}/access", response_model=schemas.ExamAccessOut)
+def teacher_set_exam_restricted(
+    exam_id: int,
+    payload: schemas.ExamRestrictedIn,
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Activa/desactiva la restricción. Desactivarla no borra la lista, solo
+    deja de aplicarla (vuelve a ser para todo el grupo)."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    exam.restricted = payload.restricted
+    db.commit()
+    return _exam_access_out(db, exam)
+
+
+@app.post("/api/teacher/exams/{exam_id}/access/students", response_model=schemas.ExamAccessOut)
+def teacher_add_allowed_student(
+    exam_id: int,
+    payload: schemas.AddAllowedStudentIn,
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Habilita un documento en el momento (p. ej. un estudiante que llega y no
+    estaba en la lista). Efecto inmediato: no hace falta que el estudiante
+    vuelva a iniciar sesión, basta con recargar la lista de exámenes."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    if not normalize_documento(payload.documento):
+        raise HTTPException(status_code=400, detail="Escribe un número de documento")
+    result = _add_allowed_documentos(db, exam, [payload.documento])
+    db.commit()
+    return _exam_access_out(db, exam, **result)
+
+
+@app.post("/api/teacher/exams/{exam_id}/access/import", response_model=schemas.ExamAccessOut)
+def teacher_import_allowed_students(
+    exam_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Agrega los documentos de un Excel a la lista (no reemplaza la existente)
+    y activa la restricción: subir una lista es señal clara de que el examen
+    no es para todo el grupo."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    docs = _read_documentos_from_sheet(file.filename or "", file.file.read())
+    result = _add_allowed_documentos(db, exam, docs)
+    exam.restricted = True
+    db.commit()
+    return _exam_access_out(db, exam, **result)
+
+
+@app.delete("/api/teacher/exams/{exam_id}/access/students/{documento}", response_model=schemas.ExamAccessOut)
+def teacher_remove_allowed_student(
+    exam_id: int, documento: str, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Quita un documento de la lista. Si el estudiante ya empezó el examen
+    puede terminarlo (ver get_or_create_attempt); solo se le impide empezar."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    doc = normalize_documento(documento)
+    entry = next((a for a in exam.allowed_students if a.documento == doc), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Ese documento no está en la lista")
+    exam.allowed_students.remove(entry)
+    db.commit()
+    return _exam_access_out(db, exam)
 
 
 @app.delete("/api/teacher/exams/{exam_id}")

@@ -140,6 +140,7 @@ class TeacherExamListOut(BaseModel):
     duration_minutes: Optional[int] = None
     is_open: bool = True
     max_violations: int = 0
+    restricted: bool = False
     total_students: int
     not_started: int
     in_progress: int
@@ -276,6 +277,32 @@ class TeacherCreateExamIn(BaseModel):
     duration_minutes: Optional[int] = None  # None = sin límite
     max_violations: int = Field(default=0, ge=0, le=20)  # 0 = sin control de salidas de ventana
     slots: list[ExamSlotIn]
+
+
+class AllowedStudentOut(BaseModel):
+    documento: str
+    # None si el documento no corresponde (aún) a ningún estudiante del grupo.
+    student_id: Optional[int] = None
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class ExamAccessOut(BaseModel):
+    exam_id: int
+    restricted: bool
+    allowed: list[AllowedStudentOut]
+    # Resultado de la última operación de agregar/importar (0/[] en las demás).
+    added: int = 0
+    already: int = 0
+    unknown: list[str] = []
+
+
+class ExamRestrictedIn(BaseModel):
+    restricted: bool
+
+
+class AddAllowedStudentIn(BaseModel):
+    documento: str
 
 
 class TeacherExamDashboardOut(BaseModel):

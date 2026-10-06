@@ -64,7 +64,15 @@ class Exam(Base):
     # 0 = control desactivado (exámenes de práctica). Si es > 0 el frontend
     # además exige pantalla completa.
     max_violations = Column(Integer, default=0, nullable=False, server_default="0")
+    # False = lo presenta todo el grupo (comportamiento de siempre). True =
+    # solo los estudiantes del grupo cuyo documento esté en allowed_students.
+    # Es una bandera explícita (y no "lista vacía = todos") para que quitar el
+    # último documento no abra el examen de golpe a todo el grupo.
+    restricted = Column(Boolean, default=False, nullable=False, server_default="0")
 
+    allowed_students = relationship(
+        "ExamAllowedStudent", back_populates="exam", cascade="all, delete-orphan",
+    )
     exam_problems = relationship(
         "ExamProblem", back_populates="exam", order_by="ExamProblem.order",
         cascade="all, delete-orphan",
@@ -81,6 +89,22 @@ class Exam(Base):
         ExamProblem.order para eso) — el Problem en sí no sabe su posición,
         ya que un mismo problema puede pertenecer a varios exámenes."""
         return [ep.problem for ep in self.exam_problems]
+
+
+class ExamAllowedStudent(Base):
+    """Documento de un estudiante habilitado para un examen restringido (ver
+    Exam.restricted). Se guarda el documento y no el id del estudiante para
+    poder habilitar a alguien que aún no tiene cuenta; se compara siempre
+    normalizado (ver normalize_documento en main.py)."""
+
+    __tablename__ = "exam_allowed_students"
+    __table_args__ = (UniqueConstraint("exam_id", "documento", name="uq_exam_allowed_documento"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("exams.id"), nullable=False, index=True)
+    documento = Column(String, nullable=False)
+
+    exam = relationship("Exam", back_populates="allowed_students")
 
 
 class ProblemBank(Base):

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../AuthContext";
 import * as api from "../api";
+import ExamAccessPanel from "../components/ExamAccessPanel";
 
 const STATUS_LABEL = {
   not_started: "No iniciado",
@@ -34,6 +35,7 @@ export default function TeacherExamDashboard() {
   const [loadingId, setLoadingId] = useState(null);
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   function loadDashboard() {
     return api
@@ -145,6 +147,12 @@ export default function TeacherExamDashboard() {
           <StatCard label="Promedio" value={`${dash.avg_score.toFixed(1)} / ${dash.max_score.toFixed(0)}`} accent="text-brand-300" />
           <StatCard label="Nota promedio" value={dash.avg_nota_5.toFixed(2)} accent="text-brand-300" />
         </section>
+
+        <ExamAccessPanel
+          examId={examId}
+          onChange={loadDashboard}
+          initialError={location.state?.accessError || ""}
+        />
 
         {/* Distribución de notas */}
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-lg shadow-black/20">

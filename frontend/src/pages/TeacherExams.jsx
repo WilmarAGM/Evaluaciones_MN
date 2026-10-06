@@ -129,6 +129,9 @@ export default function TeacherExams() {
                   ? `🔒 Control de ventana: se anula con ${exam.max_violations} salidas`
                   : "Sin control de ventana"}
               </p>
+              {exam.restricted && (
+                <p className="text-xs mt-1 text-amber-400/90">👥 Solo estudiantes habilitados por documento</p>
+              )}
 
               <div className="grid grid-cols-3 gap-2 mt-4 text-center">
                 <div className="rounded-lg bg-black/20 py-2">

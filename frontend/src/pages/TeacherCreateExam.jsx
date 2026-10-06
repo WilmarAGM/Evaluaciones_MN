@@ -18,6 +18,8 @@ export default function TeacherCreateExam() {
   const [proctored, setProctored] = useState(true);
   const [maxViolations, setMaxViolations] = useState(3);
   const [rows, setRows] = useState([emptyRow()]);
+  // null = todo el grupo (por defecto); un archivo = solo esos documentos.
+  const [accessFile, setAccessFile] = useState(null);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
@@ -84,13 +86,28 @@ export default function TeacherCreateExam() {
 
     setSubmitting(true);
     try {
-      await api.createTeacherExam({
+      const exam = await api.createTeacherExam({
         title: title.trim(),
         description: description.trim() || null,
         duration_minutes: untimed ? null : Number(durationMinutes) || null,
         max_violations: proctored ? Number(maxViolations) || 3 : 0,
         slots,
       });
+      if (accessFile) {
+        try {
+          await api.importExamAllowedStudents(exam.id, accessFile);
+        } catch (err) {
+          // El examen ya existe (deshabilitado): se lleva al docente a su
+          // dashboard para reintentar la lista ahí, sin crear un duplicado.
+          const detail = err?.response?.data?.detail || "No se pudo leer el archivo.";
+          navigate(`/teacher/exams/${exam.id}`, {
+            state: { accessError: `El examen se creó, pero la lista de habilitados falló: ${detail}` },
+          });
+          return;
+        }
+        navigate(`/teacher/exams/${exam.id}`);
+        return;
+      }
       navigate("/teacher/exams");
     } catch (err) {
       setError(err?.response?.data?.detail || "No se pudo crear el examen.");
@@ -183,6 +200,31 @@ export default function TeacherCreateExam() {
                 <p className="pl-6 text-xs text-slate-500">
                   Recomendado solo para exámenes de práctica: el estudiante puede cambiar de ventana libremente.
                 </p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-2">
+            <h2 className="text-white font-semibold">Quién puede presentarlo</h2>
+            <p className="text-xs text-slate-500">
+              Opcional. Sin archivo, el examen es para todo el grupo. Con un Excel (columna “Documento”, o la primera
+              columna), solo para esos estudiantes. Después puedes habilitar a alguien más desde el dashboard del examen.
+            </p>
+            <div className="flex items-center gap-3">
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(e) => setAccessFile(e.target.files?.[0] || null)}
+                className="text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-sm file:text-slate-200 hover:file:bg-white/15"
+              />
+              {accessFile && (
+                <button
+                  type="button"
+                  onClick={() => setAccessFile(null)}
+                  className="text-xs text-rose-400 hover:text-rose-300 transition"
+                >
+                  Quitar archivo
+                </button>
               )}
             </div>
           </div>

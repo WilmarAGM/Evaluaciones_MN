@@ -155,6 +155,40 @@ export async function toggleExamOpen(examId) {
   return data;
 }
 
+// ---- Habilitación por documento (examen restringido a una lista) ----
+
+export async function getExamAccess(examId) {
+  const { data } = await client.get(`/api/teacher/exams/${examId}/access`);
+  return data;
+}
+
+export async function setExamRestricted(examId, restricted) {
+  const { data } = await client.put(`/api/teacher/exams/${examId}/access`, { restricted });
+  return data;
+}
+
+export async function addExamAllowedStudent(examId, documento) {
+  const { data } = await client.post(`/api/teacher/exams/${examId}/access/students`, { documento });
+  return data;
+}
+
+export async function removeExamAllowedStudent(examId, documento) {
+  const { data } = await client.delete(
+    `/api/teacher/exams/${examId}/access/students/${encodeURIComponent(documento)}`
+  );
+  return data;
+}
+
+// Agrega los documentos del Excel a la lista y activa la restricción.
+export async function importExamAllowedStudents(examId, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await client.post(`/api/teacher/exams/${examId}/access/import`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
 export async function getTeacherExamPreview(examId) {
   const { data } = await client.get(`/api/teacher/exams/${examId}/preview`);
   return data;

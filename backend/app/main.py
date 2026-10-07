@@ -1738,24 +1738,46 @@ def teacher_remove_allowed_student(
 def teacher_delete_exam(
     exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
-    """Elimina el examen y TODOS los datos de estudiantes asociados a sus
-    problemas: intentos (ExamAttempt/AttemptProblem) y entregas (Submission),
-    incluso si algún problema también aparece en otro examen (banco
-    compartido) — en ese caso el trabajo guardado en ese otro examen también
-    se pierde. Esta es una acción destructiva e irreversible."""
+    """Elimina el examen, sus intentos (ExamAttempt/AttemptProblem) y las
+    entregas (Submission) de ESOS intentos. Una entrega es por (estudiante,
+    problema), no por examen, y los bancos generales los comparten todos los
+    grupos: por eso NUNCA se borran entregas de un problema que el mismo
+    estudiante tenga en un intento de OTRO examen. (Antes se borraban las
+    entregas de todos los problemas del banco, de todos los estudiantes: el
+    2026-10-06 borrar un examen del grupo 2 eliminó las respuestas de los
+    parciales del grupo 1.)"""
     exam = get_exam_or_404(db, exam_id, group=teacher.group)
 
-    problem_ids = {ep.problem_id for ep in exam.exam_problems}
-    for slot in exam.slots:
-        if slot.kind == "fixed" and slot.problem_id is not None:
-            problem_ids.add(slot.problem_id)
-        elif slot.kind == "random" and slot.bank_id is not None:
-            problem_ids.update(p.id for p in slot.bank.problems)
+    # Pares (estudiante, problema) de los intentos de este examen.
+    this_pairs = set(
+        db.query(models.ExamAttempt.student_id, models.AttemptProblem.problem_id)
+        .join(models.AttemptProblem, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
+        .filter(models.ExamAttempt.exam_id == exam_id)
+        .all()
+    )
+    legacy_ids = [ep.problem_id for ep in exam.exam_problems]
+    if legacy_ids:
+        for (student_id,) in db.query(models.ExamAttempt.student_id).filter(models.ExamAttempt.exam_id == exam_id):
+            this_pairs.update((student_id, pid) for pid in legacy_ids)
 
-    if problem_ids:
-        db.query(models.Submission).filter(models.Submission.problem_id.in_(problem_ids)).delete(
-            synchronize_session=False
-        )
+    # Pares que también pertenecen a un intento de otro examen: se conservan.
+    other_pairs = set(
+        db.query(models.ExamAttempt.student_id, models.AttemptProblem.problem_id)
+        .join(models.AttemptProblem, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
+        .filter(models.ExamAttempt.exam_id != exam_id)
+        .all()
+    )
+    other_pairs.update(
+        db.query(models.ExamAttempt.student_id, models.ExamProblem.problem_id)
+        .join(models.ExamProblem, models.ExamProblem.exam_id == models.ExamAttempt.exam_id)
+        .filter(models.ExamAttempt.exam_id != exam_id)
+        .all()
+    )
+
+    for student_id, problem_id in this_pairs - other_pairs:
+        db.query(models.Submission).filter(
+            models.Submission.student_id == student_id, models.Submission.problem_id == problem_id
+        ).delete(synchronize_session=False)
 
     attempt_ids = [
         row.id for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.exam_id == exam_id).all()

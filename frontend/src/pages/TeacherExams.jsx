@@ -32,7 +32,7 @@ export default function TeacherExams() {
 
   async function handleDelete(exam) {
     const confirmed = window.confirm(
-      `¿Eliminar el examen "${exam.title}"?\n\nEsto borrará también, de forma permanente, todos los intentos y entregas guardadas por los estudiantes en sus problemas (incluso si algún problema se comparte con otro examen). Esta acción no se puede deshacer.`
+      `¿Eliminar el examen "${exam.title}"?\n\nEsto borrará también, de forma permanente, los intentos y las respuestas que los estudiantes guardaron EN ESTE examen. Las respuestas de otros exámenes (aunque compartan banco) no se tocan. Esta acción no se puede deshacer.`
     );
     if (!confirmed) return;
 

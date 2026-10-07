@@ -11,6 +11,7 @@ const DRAFT_SAVE_DEBOUNCE_MS = 1500;
 
 export default function ProblemCard({
   problem,
+  examId,
   index,
   examFinished,
   hideGrading = false,
@@ -34,7 +35,7 @@ export default function ProblemCard({
 
   useEffect(() => {
     api
-      .getMySubmission(problem.id)
+      .getMySubmission(problem.id, examId)
       .then((saved) => {
         if (saved) {
           setCode(saved.code);
@@ -44,7 +45,7 @@ export default function ProblemCard({
         }
       })
       .finally(() => setLoadingSaved(false));
-  }, [problem.id]);
+  }, [problem.id, examId]);
 
   function flushDraft() {
     if (draftTimerRef.current) {
@@ -52,7 +53,7 @@ export default function ProblemCard({
       draftTimerRef.current = null;
     }
     setDraftState("saving");
-    draftSaveFn(problem.id, latestCodeRef.current)
+    draftSaveFn(problem.id, latestCodeRef.current, examId)
       .then(() => setDraftState("saved"))
       .catch(() => setDraftState("error"));
   }
@@ -88,7 +89,7 @@ export default function ProblemCard({
     setOutput(null);
     setCanSave(false);
     try {
-      const result = await runFn(problem.id, code);
+      const result = await runFn(problem.id, code, examId);
       setOutput(result);
       setCanSave(true);
       // El backend ya persistió código + resultado al ejecutar; cancelamos
@@ -119,7 +120,7 @@ export default function ProblemCard({
   async function handleSave() {
     setSaving(true);
     try {
-      const result = await saveFn(problem.id, code);
+      const result = await saveFn(problem.id, code, examId);
       setSavedAt(result.saved_at);
       setCanSave(false);
       if (draftTimerRef.current) {

@@ -37,6 +37,7 @@ python -m app.migrate_fix_untimed_exams /app/data/evaluaciones.db
 python -m app.migrate_global_banks /app/data/evaluaciones.db
 python -m app.migrate_exam_allowlist /app/data/evaluaciones.db
 python -m app.migrate_manual_scores /app/data/evaluaciones.db
+python -m app.migrate_submissions_per_exam /app/data/evaluaciones.db
 
 echo "--- Datos semilla (idempotentes) ---"
 python -m app.seed

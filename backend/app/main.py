@@ -346,39 +346,62 @@ def get_exam_or_404(db: Session, exam_id: int, group: int | None = None) -> mode
     return exam
 
 
-def get_exam_for_student_problem(db: Session, student: models.Student, problem: models.Problem) -> models.Exam:
-    """Resuelve a qué examen pertenece `problem` para efectos de validar el
-    intento activo del estudiante. Primero revisa si le fue asignado vía
-    sorteo por estudiante (AttemptProblem, ver resolve_exam_problems); si
-    no, cae al caso legado: un mismo Problem (banco) puede estar asignado a
-    varios exámenes vía ExamProblem, si el estudiante ya tiene un intento en
-    curso en alguno de ellos se usa ese, si no se usa el único candidato
-    (caso normal: el problema solo está en un examen activo)."""
-    assigned = (
-        db.query(models.AttemptProblem)
-        .join(models.ExamAttempt, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
-        .filter(
-            models.AttemptProblem.problem_id == problem.id,
-            models.ExamAttempt.student_id == student.id,
-        )
-        .first()
+def find_submission(db: Session, student_id: int, problem_id: int, exam_id: int | None):
+    """La respuesta de un estudiante a un problema EN UN EXAMEN (exam_id None =
+    pruebas del docente en la vista previa, que no pertenecen a ningún intento)."""
+    q = db.query(models.Submission).filter(
+        models.Submission.student_id == student_id, models.Submission.problem_id == problem_id
     )
-    if assigned:
-        return get_exam_or_404(db, assigned.attempt.exam_id, group=student.group)
+    q = q.filter(models.Submission.exam_id == exam_id) if exam_id is not None else q.filter(
+        models.Submission.exam_id.is_(None)
+    )
+    return q.first()
 
-    exam_ids = [ep.exam_id for ep in problem.exam_problems]
-    if not exam_ids:
-        raise HTTPException(status_code=404, detail="Este problema no está asignado a ningún examen")
-    if len(exam_ids) == 1:
-        return get_exam_or_404(db, exam_ids[0], group=student.group)
 
-    attempt = (
+def get_exam_for_student_problem(
+    db: Session, student: models.Student, problem: models.Problem, exam_id: int | None = None
+) -> models.Exam:
+    """Resuelve a qué examen corresponde un run/save/borrador de `problem`.
+
+    Un mismo problema puede estar en varios exámenes del estudiante (bancos
+    compartidos), así que el frontend manda exam_id. Si no lo manda (pestaña
+    abierta con una versión anterior), se elige el examen con intento EN CURSO
+    más reciente que contenga el problema; antes se tomaba el primero que
+    apareciera, que podía ser un examen ya terminado ("El tiempo del examen ha
+    finalizado") aunque el estudiante estuviera presentando otro."""
+    candidates = {}  # exam_id -> intento del estudiante en ese examen (o None)
+    for attempt in (
         db.query(models.ExamAttempt)
-        .filter(models.ExamAttempt.student_id == student.id, models.ExamAttempt.exam_id.in_(exam_ids))
-        .first()
-    )
-    if attempt:
-        return get_exam_or_404(db, attempt.exam_id, group=student.group)
+        .join(models.AttemptProblem, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
+        .filter(models.AttemptProblem.problem_id == problem.id, models.ExamAttempt.student_id == student.id)
+        .all()
+    ):
+        candidates[attempt.exam_id] = attempt
+    for ep in problem.exam_problems:
+        if ep.exam.group == student.group and not ep.exam.slots:
+            candidates.setdefault(ep.exam_id, peek_attempt(db, student, ep.exam))
+
+    if exam_id is not None:
+        if exam_id in candidates:
+            return get_exam_or_404(db, exam_id, group=student.group)
+        # El intento pudo crearse sin que aún se hayan sorteado sus problemas
+        # (la página pide el examen y el inicio en paralelo): se resuelve aquí.
+        exam = get_exam_or_404(db, exam_id, group=student.group)
+        if exam.slots and peek_attempt(db, student, exam) is not None:
+            if problem.id in {p.id for p in resolve_exam_problems(db, student, exam)}:
+                return exam
+        raise HTTPException(status_code=404, detail="Este problema no forma parte de ese examen")
+
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Este problema no está asignado a ningún examen")
+    with_attempt = [a for a in candidates.values() if a is not None]
+    active = [a for a in with_attempt if not attempt_status(a, db)["finished"]]
+    if active:
+        return get_exam_or_404(db, max(active, key=lambda a: _aware(a.started_at)).exam_id, group=student.group)
+    if len(candidates) == 1:
+        return get_exam_or_404(db, next(iter(candidates)), group=student.group)
+    if with_attempt:
+        return get_exam_or_404(db, max(with_attempt, key=lambda a: _aware(a.started_at)).exam_id, group=student.group)
     raise HTTPException(
         status_code=409,
         detail="Este problema pertenece a varios exámenes y no tienes un intento activo en ninguno.",
@@ -489,13 +512,9 @@ def student_attempt_status_label(db: Session, student: models.Student, exam: mod
     return "finished" if attempt_status(attempt, db)["finished"] else "in_progress"
 
 
-def student_problem_result(db: Session, student: models.Student, problem: models.Problem):
-    """Puntaje/estado de UN estudiante en UN problema, a partir de su entrega (si existe)."""
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
-        .first()
-    )
+def student_problem_result(db: Session, student: models.Student, problem: models.Problem, exam: models.Exam):
+    """Puntaje/estado de UN estudiante en UN problema DE UN EXAMEN, a partir de su entrega (si existe)."""
+    submission = find_submission(db, student.id, problem.id, exam.id)
     if submission is None:
         score = 0.0
     elif submission.manual_score is not None:
@@ -694,7 +713,7 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
     total_score = 0.0
     max_score = 0.0
     for problem in resolve_exam_problems(db, student, exam):
-        submission, score, checks_report = student_problem_result(db, student, problem)
+        submission, score, checks_report = student_problem_result(db, student, problem, exam)
         if status["annulled"]:
             score, checks_report = 0.0, []
 
@@ -745,7 +764,9 @@ def _manual_fields(submission) -> dict:
     }
 
 
-def _persist_submission(db: Session, student: models.Student, problem: models.Problem, code: str, result: dict, grading: dict) -> models.Submission:
+def _persist_submission(
+    db: Session, student: models.Student, problem: models.Problem, exam: models.Exam, code: str, result: dict, grading: dict
+) -> models.Submission:
     """Guarda código + calificación. Si `result`/`grading` traen infra_error
     (el ejecutor no respondió, ver executor.SandboxUnavailableError), NO
     toca la fila existente: sobrescribir con stdout/stderr/nota vacíos
@@ -754,11 +775,7 @@ def _persist_submission(db: Session, student: models.Student, problem: models.Pr
     _regrade_attempt) deben avisarle al usuario que reintente; esta función
     es la última línea de defensa por si algún llamador futuro olvida
     revisarlo antes."""
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
-        .first()
-    )
+    submission = find_submission(db, student.id, problem.id, exam.id)
     if result.get("infra_error") or grading.get("infra_error"):
         logger.warning(
             "infra_error al calificar: student_id=%s problem_id=%s — no se sobrescribió la entrega existente",
@@ -769,14 +786,14 @@ def _persist_submission(db: Session, student: models.Student, problem: models.Pr
         # Sin entrega previa que proteger: se guarda el código (para no
         # perder lo que escribió) pero SIN calificación, para que quede
         # claro que 0 aquí significa "no se pudo calificar", no "está mal".
-        submission = models.Submission(student_id=student.id, problem_id=problem.id, code=code)
+        submission = models.Submission(student_id=student.id, problem_id=problem.id, exam_id=exam.id, code=code)
         db.add(submission)
         db.commit()
         db.refresh(submission)
         return submission
 
     if not submission:
-        submission = models.Submission(student_id=student.id, problem_id=problem.id, code=code)
+        submission = models.Submission(student_id=student.id, problem_id=problem.id, exam_id=exam.id, code=code)
         db.add(submission)
     elif submission.code != code:
         _clear_manual_score(submission)
@@ -823,11 +840,7 @@ def _regrade_attempt(db: Session, student: models.Student, exam: models.Exam) ->
     examen se recalifican con normalidad; esto no debe tumbar el cierre del
     intento (el estudiante igual necesita poder finalizar)."""
     for problem in resolve_exam_problems(db, student, exam):
-        submission = (
-            db.query(models.Submission)
-            .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
-            .first()
-        )
+        submission = find_submission(db, student.id, problem.id, exam.id)
         if submission is None:
             continue
         result = run_problem_code(submission.code, problem)
@@ -838,18 +851,19 @@ def _regrade_attempt(db: Session, student: models.Student, exam: models.Exam) ->
                 "— se conservó su última calificación guardada, revisar manualmente",
                 student.id, exam.id, problem.id,
             )
-        _persist_submission(db, student, problem, submission.code, result, grading)
+        _persist_submission(db, student, problem, exam, submission.code, result, grading)
 
 
 @app.post("/api/problems/{problem_id}/run", response_model=schemas.RunResult)
 def run_code(
     problem_id: int,
     payload: schemas.RunRequest,
+    exam_id: int | None = None,
     db: Session = Depends(get_db),
     student: models.Student = Depends(get_current_student),
 ):
     problem = get_problem_or_404(db, problem_id)
-    exam = get_exam_for_student_problem(db, student, problem)
+    exam = get_exam_for_student_problem(db, student, problem, exam_id)
     require_active_attempt(db, student, exam)
 
     result = run_problem_code(payload.code, problem)
@@ -861,7 +875,7 @@ def run_code(
     # tiempo) el código escrito se perdía aunque sí lo hubiera corrido. Ahora
     # cada corrida deja guardado el código y la calificación real, igual que
     # /save (que se conserva para poder guardar sin tener que re-ejecutar).
-    _persist_submission(db, student, problem, payload.code, result, grading)
+    _persist_submission(db, student, problem, exam, payload.code, result, grading)
 
     # En exámenes con tiempo límite (a diferencia de la práctica libre del
     # Simulacro, duration_minutes=None) el estudiante no debe poder saber si
@@ -899,17 +913,18 @@ def run_code(
 def save_code(
     problem_id: int,
     payload: schemas.RunRequest,
+    exam_id: int | None = None,
     db: Session = Depends(get_db),
     student: models.Student = Depends(get_current_student),
 ):
     problem = get_problem_or_404(db, problem_id)
-    exam = get_exam_for_student_problem(db, student, problem)
+    exam = get_exam_for_student_problem(db, student, problem, exam_id)
     require_active_attempt(db, student, exam)
 
     result = run_problem_code(payload.code, problem)
     _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
-    submission = _persist_submission(db, student, problem, payload.code, result, grading)
+    submission = _persist_submission(db, student, problem, exam, payload.code, result, grading)
 
     return schemas.SaveResult(saved=True, saved_at=submission.updated_at)
 
@@ -918,6 +933,7 @@ def save_code(
 def save_draft(
     problem_id: int,
     payload: schemas.RunRequest,
+    exam_id: int | None = None,
     db: Session = Depends(get_db),
     student: models.Student = Depends(get_current_student),
 ):
@@ -929,16 +945,20 @@ def save_draft(
     justo después de escribir. stdout/stderr/calificación quedan como estén
     (los actualiza la próxima ejecución real vía /run o /save)."""
     problem = get_problem_or_404(db, problem_id)
-    exam = get_exam_for_student_problem(db, student, problem)
-    require_active_attempt(db, student, exam)
+    if student.role == "student":
+        exam = get_exam_for_student_problem(db, student, problem, exam_id)
+        require_active_attempt(db, student, exam)
+        draft_exam_id = exam.id
+    else:
+        # Vista previa del docente: sus pruebas no pertenecen a ningún examen
+        # (igual que teacher_save_code).
+        draft_exam_id = None
 
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
-        .first()
-    )
+    submission = find_submission(db, student.id, problem.id, draft_exam_id)
     if not submission:
-        submission = models.Submission(student_id=student.id, problem_id=problem.id, code=payload.code)
+        submission = models.Submission(
+            student_id=student.id, problem_id=problem.id, exam_id=draft_exam_id, code=payload.code
+        )
         db.add(submission)
     else:
         if submission.code != payload.code:
@@ -953,14 +973,18 @@ def save_draft(
 @app.get("/api/problems/{problem_id}/my-submission", response_model=schemas.MySubmissionOut | None)
 def my_submission(
     problem_id: int,
+    exam_id: int | None = None,
     db: Session = Depends(get_db),
     student: models.Student = Depends(get_current_student),
 ):
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem_id)
-        .first()
-    )
+    if student.role == "student":
+        try:
+            exam = get_exam_for_student_problem(db, student, get_problem_or_404(db, problem_id), exam_id)
+        except HTTPException:
+            return None
+        submission = find_submission(db, student.id, problem_id, exam.id)
+    else:
+        submission = find_submission(db, student.id, problem_id, None)
     if not submission:
         return None
     return schemas.MySubmissionOut(
@@ -1023,11 +1047,7 @@ def teacher_save_code(
     _raise_if_infra_error(result)
     grading = executor.grade_submission(result, problem)
 
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == teacher.id, models.Submission.problem_id == problem.id)
-        .first()
-    )
+    submission = find_submission(db, teacher.id, problem.id, None)
     if not submission:
         submission = models.Submission(student_id=teacher.id, problem_id=problem.id, code=payload.code)
         db.add(submission)
@@ -1121,7 +1141,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 row_scores.append(0.0)
                 continue
             key = idx if is_random else problem.id
-            submission, score, checks_report = student_problem_result(db, student, problem)
+            submission, score, checks_report = student_problem_result(db, student, problem, exam)
             if submission is not None and submission.manual_score is not None and not annulled:
                 manual_adjusted = True
                 if submission.manual_comment:
@@ -1752,45 +1772,14 @@ def teacher_delete_exam(
     exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
 ):
     """Elimina el examen, sus intentos (ExamAttempt/AttemptProblem) y las
-    entregas (Submission) de ESOS intentos. Una entrega es por (estudiante,
-    problema), no por examen, y los bancos generales los comparten todos los
-    grupos: por eso NUNCA se borran entregas de un problema que el mismo
-    estudiante tenga en un intento de OTRO examen. (Antes se borraban las
-    entregas de todos los problemas del banco, de todos los estudiantes: el
-    2026-10-06 borrar un examen del grupo 2 eliminó las respuestas de los
-    parciales del grupo 1.)"""
+    respuestas (Submission) de ESTE examen (Submission.exam_id). Nunca toca
+    respuestas de otros exámenes aunque compartan problemas o bancos. (Antes
+    se borraban las entregas de todos los problemas del banco, de todos los
+    estudiantes: el 2026-10-06 borrar un examen del grupo 2 eliminó las
+    respuestas de los parciales del grupo 1.)"""
     exam = get_exam_or_404(db, exam_id, group=teacher.group)
 
-    # Pares (estudiante, problema) de los intentos de este examen.
-    this_pairs = set(
-        db.query(models.ExamAttempt.student_id, models.AttemptProblem.problem_id)
-        .join(models.AttemptProblem, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
-        .filter(models.ExamAttempt.exam_id == exam_id)
-        .all()
-    )
-    legacy_ids = [ep.problem_id for ep in exam.exam_problems]
-    if legacy_ids:
-        for (student_id,) in db.query(models.ExamAttempt.student_id).filter(models.ExamAttempt.exam_id == exam_id):
-            this_pairs.update((student_id, pid) for pid in legacy_ids)
-
-    # Pares que también pertenecen a un intento de otro examen: se conservan.
-    other_pairs = set(
-        db.query(models.ExamAttempt.student_id, models.AttemptProblem.problem_id)
-        .join(models.AttemptProblem, models.AttemptProblem.attempt_id == models.ExamAttempt.id)
-        .filter(models.ExamAttempt.exam_id != exam_id)
-        .all()
-    )
-    other_pairs.update(
-        db.query(models.ExamAttempt.student_id, models.ExamProblem.problem_id)
-        .join(models.ExamProblem, models.ExamProblem.exam_id == models.ExamAttempt.exam_id)
-        .filter(models.ExamAttempt.exam_id != exam_id)
-        .all()
-    )
-
-    for student_id, problem_id in this_pairs - other_pairs:
-        db.query(models.Submission).filter(
-            models.Submission.student_id == student_id, models.Submission.problem_id == problem_id
-        ).delete(synchronize_session=False)
+    db.query(models.Submission).filter(models.Submission.exam_id == exam_id).delete(synchronize_session=False)
 
     attempt_ids = [
         row.id for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.exam_id == exam_id).all()
@@ -1840,7 +1829,7 @@ def teacher_student_submissions(
     else:
         student_problems = resolve_exam_problems(db, student, exam)
     for problem in student_problems:
-        submission, score, checks_report = student_problem_result(db, student, problem)
+        submission, score, checks_report = student_problem_result(db, student, problem, exam)
         problems_out.append(
             schemas.ProblemResultOut(
                 problem_id=problem.id,
@@ -2010,11 +1999,7 @@ def teacher_set_manual_score(
         )
 
     problem = get_problem_or_404(db, problem_id)
-    submission = (
-        db.query(models.Submission)
-        .filter(models.Submission.student_id == student.id, models.Submission.problem_id == problem.id)
-        .first()
-    )
+    submission = find_submission(db, student.id, problem.id, exam.id)
 
     if payload.score is None:
         if submission is not None:
@@ -2030,7 +2015,7 @@ def teacher_set_manual_score(
         # Sin entrega: el docente igual puede asignar puntos (p. ej. trabajo
         # entregado por otro medio). Código vacío = "Sin entrega" en la vista.
         submission = models.Submission(
-            student_id=student.id, problem_id=problem.id, code="", total_score=0.0, checks_report="[]"
+            student_id=student.id, problem_id=problem.id, exam_id=exam.id, code="", total_score=0.0, checks_report="[]"
         )
         db.add(submission)
     submission.manual_score = round(payload.score, 2)

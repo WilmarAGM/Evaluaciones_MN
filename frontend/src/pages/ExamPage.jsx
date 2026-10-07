@@ -230,6 +230,7 @@ export default function ExamPage() {
           <ProblemCard
             key={problem.id}
             problem={problem}
+            examId={examId}
             index={i}
             examFinished={false}
             hideGrading={!unlimited}

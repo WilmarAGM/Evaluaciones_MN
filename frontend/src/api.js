@@ -105,23 +105,27 @@ export async function getExamResults(examId) {
   return data;
 }
 
-export async function runCode(problemId, code) {
-  const { data } = await client.post(`/api/problems/${problemId}/run`, { code });
+// examId: con bancos compartidos un mismo problema puede estar en varios
+// exámenes del estudiante; cada examen guarda su propia respuesta.
+const examParams = (examId) => (examId ? { params: { exam_id: examId } } : undefined);
+
+export async function runCode(problemId, code, examId) {
+  const { data } = await client.post(`/api/problems/${problemId}/run`, { code }, examParams(examId));
   return data;
 }
 
-export async function saveCode(problemId, code) {
-  const { data } = await client.post(`/api/problems/${problemId}/save`, { code });
+export async function saveCode(problemId, code, examId) {
+  const { data } = await client.post(`/api/problems/${problemId}/save`, { code }, examParams(examId));
   return data;
 }
 
-export async function saveDraft(problemId, code) {
-  const { data } = await client.post(`/api/problems/${problemId}/save-draft`, { code });
+export async function saveDraft(problemId, code, examId) {
+  const { data } = await client.post(`/api/problems/${problemId}/save-draft`, { code }, examParams(examId));
   return data;
 }
 
-export async function getMySubmission(problemId) {
-  const { data } = await client.get(`/api/problems/${problemId}/my-submission`);
+export async function getMySubmission(problemId, examId) {
+  const { data } = await client.get(`/api/problems/${problemId}/my-submission`, examParams(examId));
   return data;
 }
 

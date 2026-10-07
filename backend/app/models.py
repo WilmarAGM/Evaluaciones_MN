@@ -247,11 +247,20 @@ class AttemptProblem(Base):
 
 class Submission(Base):
     __tablename__ = "submissions"
-    __table_args__ = (UniqueConstraint("student_id", "problem_id", name="uq_submission_student_problem"),)
+    # Una respuesta por (estudiante, problema, EXAMEN): con bancos compartidos
+    # un estudiante puede recibir el mismo problema en dos exámenes, y cada
+    # uno debe conservar su propia respuesta (antes era una sola por
+    # (estudiante, problema) y el segundo examen pisaba al primero). Ver
+    # migrate_submissions_per_exam.py. exam_id es NULL solo en las pruebas
+    # del docente desde la vista previa (no pertenecen a ningún intento).
+    __table_args__ = (
+        UniqueConstraint("student_id", "problem_id", "exam_id", name="uq_submission_student_problem_exam"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     problem_id = Column(Integer, ForeignKey("problems.id"), nullable=False)
+    exam_id = Column(Integer, ForeignKey("exams.id"), nullable=True, index=True)
     code = Column(Text, nullable=False)
     stdout = Column(Text, nullable=True)
     stderr = Column(Text, nullable=True)

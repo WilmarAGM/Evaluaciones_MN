@@ -1,0 +1,8 @@
+[Unit]
+Description=Copia de la base de datos de Evaluaciones_MN (cada 15 min, 48 h + diarias 30 dias)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/evaluaciones-backup.sh

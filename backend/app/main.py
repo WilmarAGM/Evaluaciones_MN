@@ -164,6 +164,10 @@ def get_or_create_attempt(db: Session, student: models.Student, exam: models.Exa
         # (vista previa de exámenes con sorteo) y nunca se restringe.
         if student.role == "student" and not student_allowed_in_exam(exam, student):
             raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
+        # Ídem examen deshabilitado: además de start_exam, aquí llegan run/save/
+        # finish sobre un problema de examen legado sin intento previo.
+        if student.role == "student" and not exam.is_open:
+            raise HTTPException(status_code=403, detail="El docente aún no ha habilitado este examen.")
         # duration_seconds no se usa cuando exam.duration_minutes es None (examen sin
         # límite de tiempo), pero la columna es NOT NULL, así que igual guardamos un
         # valor coherente por si el examen luego se reconfigura con un límite.
@@ -597,8 +601,14 @@ def build_exam_out(exam: models.Exam, problems: list[models.Problem]) -> schemas
 @app.get("/api/exams/{exam_id}", response_model=schemas.ExamOut)
 def get_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
     exam = get_exam_or_404(db, exam_id, group=student.group)
-    if not student_allowed_in_exam(exam, student) and peek_attempt(db, student, exam) is None:
-        raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
+    if peek_attempt(db, student, exam) is None:
+        # Sin intento: mismas reglas que start_exam. Sin esto, un examen
+        # cerrado dejaba ver sus enunciados (y con sorteo, crear el intento
+        # saltándose is_open) con solo abrir su URL.
+        if not student_allowed_in_exam(exam, student):
+            raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
+        if not exam.is_open:
+            raise HTTPException(status_code=403, detail="El docente aún no ha habilitado este examen.")
     return build_exam_out(exam, resolve_exam_problems(db, student, exam))
 
 
@@ -672,7 +682,10 @@ def report_violation(
 @app.get("/api/exams/{exam_id}/results", response_model=schemas.ExamResultsOut)
 def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
     exam = get_exam_or_404(db, exam_id, group=student.group)
-    attempt = get_or_create_attempt(db, student, exam)
+    # peek, no get_or_create: consultar resultados no debe arrancar el examen.
+    attempt = peek_attempt(db, student, exam)
+    if attempt is None:
+        raise HTTPException(status_code=403, detail="Aún no has finalizado el examen.")
     status = attempt_status(attempt, db)
     if not status["finished"]:
         raise HTTPException(status_code=403, detail="Aún no has finalizado el examen.")
@@ -1819,7 +1832,14 @@ def teacher_student_submissions(
     problems_out = []
     total_score = 0.0
     max_score = 0.0
-    for problem in resolve_exam_problems(db, student, exam):
+    # Con slots, resolve_exam_problems CREA el intento (y sortea) si no existe:
+    # mirar el detalle de un estudiante que no ha empezado le arrancaría el
+    # examen (y el cronómetro). Sin intento no hay nada que mostrar.
+    if exam.slots and peek_attempt(db, student, exam) is None:
+        student_problems = []
+    else:
+        student_problems = resolve_exam_problems(db, student, exam)
+    for problem in student_problems:
         submission, score, checks_report = student_problem_result(db, student, problem)
         problems_out.append(
             schemas.ProblemResultOut(

@@ -107,6 +107,13 @@ def get_current_student(token: str = Depends(oauth2_scheme), db: Session = Depen
 def get_current_teacher(student: models.Student = Depends(get_current_student)) -> models.Student:
     if student.role != "teacher":
         raise HTTPException(status_code=403, detail="Acceso solo para docentes")
+    # Todo el aislamiento entre docentes se apoya en teacher.group: con None,
+    # get_exam_or_404(..., group=None) y similares NO filtran y el docente
+    # podría ver, cerrar o borrar exámenes de cualquier grupo. Hoy no se
+    # pueden crear docentes sin grupo (AdminTeacherIn lo exige), pero una
+    # edición manual de la BD bastaría; por eso se rechaza aquí, en un solo sitio.
+    if student.group is None:
+        raise HTTPException(status_code=403, detail="Tu cuenta de docente no tiene un grupo asignado.")
     return student
 
 

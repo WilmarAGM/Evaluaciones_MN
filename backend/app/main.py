@@ -2108,6 +2108,18 @@ def admin_delete_teacher(
     )
     if not teacher:
         raise HTTPException(status_code=404, detail="Docente no encontrado")
+    # Solo filas PROPIAS del docente: sus pruebas desde la vista previa (y los
+    # intentos que esa vista previa crea en exámenes con sorteo). Sin esto,
+    # db.delete intentaba dejar submissions.student_id en NULL y fallaba. Los
+    # exámenes y bancos son del GRUPO, no del docente, y se conservan.
+    own_attempts = [a.id for a in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.student_id == teacher.id)]
+    if own_attempts:
+        db.query(models.AttemptProblem).filter(models.AttemptProblem.attempt_id.in_(own_attempts)).delete(
+            synchronize_session=False
+        )
+        db.query(models.ExamAttempt).filter(models.ExamAttempt.id.in_(own_attempts)).delete(synchronize_session=False)
+    db.query(models.Submission).filter(models.Submission.student_id == teacher.id).delete(synchronize_session=False)
+    db.expire(teacher, ["submissions"])
     db.delete(teacher)
     db.commit()
     return {"deleted": True, "teacher_id": teacher_id}

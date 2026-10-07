@@ -33,7 +33,9 @@ echo "--- Migraciones de esquema ---"
 # aún no existe o le faltan tablas, no hacen nada.
 python -m app.migrate_attempt_problems /app/data/evaluaciones.db
 python -m app.migrate_session_proctoring /app/data/evaluaciones.db
-python -m app.migrate_fix_untimed_exams /app/data/evaluaciones.db
+# migrate_fix_untimed_exams ya no corre aquí: fue una corrección puntual
+# (2026-09-23) que busca un examen POR TÍTULO; en cada arranque podía cambiar
+# el examen de cualquier docente que usara ese mismo título.
 python -m app.migrate_global_banks /app/data/evaluaciones.db
 python -m app.migrate_exam_allowlist /app/data/evaluaciones.db
 python -m app.migrate_manual_scores /app/data/evaluaciones.db

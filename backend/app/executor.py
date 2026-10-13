@@ -400,7 +400,36 @@ def _build_footer(checks: list) -> str:
     lines.append("        pass")
     lines.append("")
 
-    lines.append(f'print("{RESULT_MARKER}" + _json.dumps({{"checks": __RESULTS__, "figures": __FIGURES__}}))')
+    # Serialización tolerante: el .item()/.tolist() de final_value solo cubre
+    # un array numpy "a secas". Si la variable es una tupla o lista que
+    # CONTIENE arrays (p.ej. el estudiante no desempaquetó lo que devuelve una
+    # rutina), un OptimizeResult de scipy, un np.int64 dentro de una lista o
+    # un complejo, json.dumps reventaba y se perdían TODOS los checks del
+    # envío —incluidos los que sí estaban bien—, además de mostrarle al
+    # estudiante un traceback del arnés que no es de su código.
+    lines.append("def __json_default(__o):")
+    lines.append("    if hasattr(__o, 'tolist'):")
+    lines.append("        return __o.tolist()")
+    lines.append("    if isinstance(__o, (set, frozenset)):")
+    lines.append("        return list(__o)")
+    lines.append("    return repr(__o)")
+    lines.append("")
+    lines.append("def __dump_results():")
+    lines.append('    return _json.dumps({"checks": __RESULTS__, "figures": __FIGURES__}, default=__json_default)')
+    lines.append("")
+    # Último recurso (referencia circular, claves de dict no serializables):
+    # se descarta solo el check cuyo valor no se pudo serializar, nunca los
+    # demás.
+    lines.append("try:")
+    lines.append("    __payload = __dump_results()")
+    lines.append("except Exception:")
+    lines.append("    for __cid, __entry in list(__RESULTS__.items()):")
+    lines.append("        try:")
+    lines.append("            _json.dumps(__entry, default=__json_default)")
+    lines.append("        except Exception as __e:")
+    lines.append("            __RESULTS__[__cid] = {'error': 'no se pudo leer el valor: ' + str(__e)}")
+    lines.append("    __payload = __dump_results()")
+    lines.append(f'print("{RESULT_MARKER}" + __payload)')
     return "\n".join(lines)
 
 

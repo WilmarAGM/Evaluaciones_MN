@@ -653,7 +653,9 @@ def finish_exam(exam_id: int, db: Session = Depends(get_db), student: models.Stu
 
 VIOLATION_KINDS = {"hidden", "blur", "fullscreen_exit"}
 # Un cambio de pestaña dispara varios eventos casi a la vez (visibilitychange,
-# blur, salida de pantalla completa); se cuentan como una sola salida.
+# blur); se cuentan como una sola salida. "fullscreen_exit" se sigue aceptando
+# solo por los navegadores con el frontend anterior en caché: el actual ya no
+# lo envía (perder la pantalla completa no cuenta por sí solo).
 VIOLATION_DEDUPE_SECONDS = 2
 
 
@@ -690,8 +692,8 @@ def report_violation(
         attempt.finished_at = t
         attempt.annulled_at = t
         attempt.annul_reason = (
-            f"Saliste {attempt.violations} veces de la ventana del examen (cambio de pestaña o de ventana, "
-            f"o salida de la pantalla completa); el máximo permitido era {exam.max_violations}. "
+            f"Saliste {attempt.violations} veces de la ventana del examen (cambio de pestaña o de ventana); "
+            f"el máximo permitido era {exam.max_violations}. "
             "Por esa razón el examen fue anulado y su calificación es 0."
         )
     db.commit()

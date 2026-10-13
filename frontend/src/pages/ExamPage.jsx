@@ -3,6 +3,10 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import * as api from "../api";
 import ProblemCard from "../components/ProblemCard";
 
+// Control de ventana: ver el efecto que escucha blur/visibilitychange.
+const BLUR_CONFIRM_MS = 300;
+const FULLSCREEN_TRANSITION_MS = 1000;
+
 function formatTime(totalSeconds) {
   const m = Math.floor(totalSeconds / 60)
     .toString()
@@ -90,6 +94,15 @@ export default function ExamPage() {
     } catch {
       /* el navegador rechazó la pantalla completa; el aviso sigue visible */
     }
+    // Chrome/Edge: mientras dure la pantalla completa, Esc llega a la página
+    // (p.ej. al editor de código) en vez de sacar de ella; para salir hay que
+    // mantenerla presionada. Firefox y Safari no lo soportan: ahí Esc saca de
+    // pantalla completa, lo que por sí solo no cuenta como salida (ver abajo).
+    try {
+      if (document.fullscreenElement) await navigator.keyboard?.lock?.(["Escape"]);
+    } catch {
+      /* sin soporte o rechazado: Esc sigue saliendo de pantalla completa */
+    }
     setIsFullscreen(!!document.fullscreenElement);
     setArmed(true);
   }
@@ -113,19 +126,31 @@ export default function ExamPage() {
       }
     }
 
-    // Con la pantalla completa ya perdida (aviso abierto) no se cuentan más
-    // salidas: ya se contó la de la propia pérdida de pantalla completa.
-    const inFullscreen = () => !fullscreenSupported || !!document.fullscreenElement;
+    // Perder la pantalla completa (Esc, F11) NO cuenta por sí solo como
+    // salida: el examen ya queda oculto tras el aviso hasta que se vuelve a
+    // entrar. Lo que cuenta es cambiar de pestaña o de ventana, y eso se
+    // cuenta también con la pantalla completa ya perdida — si no, Esc
+    // seguido de un cambio de ventana saldría gratis.
+    let lastFullscreenChange = 0;
+    let blurTimer = null;
     const onVisibility = () => {
-      if (document.hidden && inFullscreen()) report("hidden");
+      if (document.hidden) report("hidden");
     };
+    // Algunos navegadores disparan un blur pasajero durante la propia
+    // transición de pantalla completa. Se espera un instante: si el foco ya
+    // volvió y hubo un cambio de pantalla completa pegado, fue la transición
+    // y no un cambio de ventana.
     const onBlur = () => {
-      if (inFullscreen()) report("blur");
+      clearTimeout(blurTimer);
+      blurTimer = setTimeout(() => {
+        const duringTransition = Date.now() - lastFullscreenChange < FULLSCREEN_TRANSITION_MS;
+        if (document.hasFocus() && duringTransition) return;
+        report("blur");
+      }, BLUR_CONFIRM_MS);
     };
     const onFullscreenChange = () => {
-      const active = !!document.fullscreenElement;
-      setIsFullscreen(active);
-      if (!active) report("fullscreen_exit");
+      lastFullscreenChange = Date.now();
+      setIsFullscreen(!!document.fullscreenElement);
     };
 
     document.addEventListener("visibilitychange", onVisibility);
@@ -135,6 +160,8 @@ export default function ExamPage() {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("fullscreenchange", onFullscreenChange);
+      clearTimeout(blurTimer);
+      navigator.keyboard?.unlock?.();
       // Al salir de la pantalla del examen se devuelve la pantalla normal (ya sin escuchar).
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     };
@@ -244,7 +271,8 @@ export default function ExamPage() {
             <h2 className="text-white font-semibold text-xl mb-3">Examen con control de ventana</h2>
             <p className="text-slate-300 text-sm mb-3">
               Debes mantener el examen en <span className="font-semibold">pantalla completa</span>. Cambiar de
-              pestaña o de ventana, minimizar o salir de la pantalla completa cuenta como una salida.
+              pestaña o de ventana, o minimizar, cuenta como una salida. Si sales de la pantalla completa (por
+              ejemplo con Esc) el examen se oculta hasta que vuelvas a entrar, pero eso solo no cuenta.
             </p>
             <p className="text-rose-300 text-sm font-medium mb-3">
               Con {maxViolations} salidas el examen se anula y tu calificación será 0.

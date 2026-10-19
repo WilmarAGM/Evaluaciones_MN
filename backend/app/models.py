@@ -107,6 +107,22 @@ class ExamAllowedStudent(Base):
     exam = relationship("Exam", back_populates="allowed_students")
 
 
+class GroupGuest(Base):
+    """Estudiante de otro grupo invitado a un grupo: además de los de su grupo
+    (Student.group, que no cambia), ve y presenta los exámenes de este grupo y
+    aparece en el roster y en los dashboards de su docente. Quitar la
+    invitación no borra nada del estudiante."""
+
+    __tablename__ = "group_guests"
+    __table_args__ = (UniqueConstraint("student_id", "group", name="uq_group_guest"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    group = Column(Integer, nullable=False, index=True)
+    added_by = Column(Integer, nullable=True)  # id del docente (sin FK, igual que Submission.manual_by)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class ProblemBank(Base):
     __tablename__ = "problem_banks"
 

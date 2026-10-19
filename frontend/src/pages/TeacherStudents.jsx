@@ -74,6 +74,100 @@ function RosterUploader({ onImported }) {
   );
 }
 
+function GuestAdder({ onAdded }) {
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [found, setFound] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function handleSearch(e) {
+    e.preventDefault();
+    setError("");
+    setMessage("");
+    setFound(null);
+    if (!query.trim()) {
+      setError("Escribe el correo o el documento del estudiante.");
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await api.searchGuestStudent(query.trim());
+      if (res) setFound(res);
+      else setError("No hay ningún estudiante con ese correo o documento.");
+    } catch (err) {
+      setError(err.response?.data?.detail || "No se pudo buscar.");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleAdd() {
+    setAdding(true);
+    setError("");
+    try {
+      const student = await api.addGuestStudent(found.id);
+      onAdded(student);
+      setMessage(`${found.full_name || found.email} quedó como invitado: ya ve los exámenes de tu grupo.`);
+      setFound(null);
+      setQuery("");
+    } catch (err) {
+      setError(err.response?.data?.detail || "No se pudo agregar el invitado.");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <section className="rounded-2xl border border-white/10 bg-white/5 p-5 mb-10">
+      <h2 className="text-lg font-semibold text-white mb-1">Agregar estudiante de otro grupo</h2>
+      <p className="text-xs text-slate-500 mb-4">
+        El estudiante sigue en su grupo (con sus notas allí) y además podrá presentar los exámenes del tuyo. Busca
+        por correo o documento exactos.
+      </p>
+      <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="correo@unal.edu.co o documento"
+          className="flex-1 min-w-[220px] rounded-lg bg-black/30 border border-white/10 text-white px-3 py-2 text-sm focus:outline-none focus:border-brand-400/50"
+        />
+        <button
+          type="submit"
+          disabled={searching}
+          className="rounded-lg border border-white/10 hover:bg-white/5 text-slate-200 text-sm font-medium px-4 py-2 transition disabled:opacity-60"
+        >
+          {searching ? "Buscando..." : "Buscar"}
+        </button>
+      </form>
+      {found && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3">
+          <div className="text-sm">
+            <p className="text-white font-medium">{found.full_name || "(sin nombre)"}</p>
+            <p className="text-slate-400 text-xs">
+              {found.email} · Doc. {found.documento} · Grupo {found.group ?? "—"}
+            </p>
+          </div>
+          {found.already_guest ? (
+            <span className="text-xs text-violet-300">Ya es invitado de tu grupo</span>
+          ) : (
+            <button
+              onClick={handleAdd}
+              disabled={adding}
+              className="rounded-lg bg-violet-600/80 hover:bg-violet-600 text-white text-sm font-medium px-4 py-2 transition disabled:opacity-60"
+            >
+              {adding ? "Agregando..." : "+ Agregar como invitado"}
+            </button>
+          )}
+        </div>
+      )}
+      {message && <p className="text-emerald-400 text-sm mt-3">{message}</p>}
+      {error && <p className="text-rose-400 text-sm mt-3">{error}</p>}
+    </section>
+  );
+}
+
 export default function TeacherStudents() {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -149,9 +243,28 @@ export default function TeacherStudents() {
     }
   }
 
+  async function handleRemoveGuest(student) {
+    const confirmed = window.confirm(
+      `¿Quitar a ${student.full_name || student.email} como invitado? Deja de ver los exámenes de tu grupo; su cuenta y sus notas en el Grupo ${student.guest_from} no se tocan.`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(student.id);
+    try {
+      await api.removeGuestStudent(student.id);
+      setStudents((prev) => prev.filter((s) => s.id !== student.id));
+    } catch (err) {
+      window.alert(err.response?.data?.detail || "No se pudo quitar el invitado.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const ownCount = students.filter((s) => s.guest_from == null).length;
+
   async function handleDeleteGroup() {
     const confirmed = window.confirm(
-      `¿Eliminar TODO el roster de tu grupo (${students.length} estudiante(s))? Esto borra también sus intentos y entregas. Esta acción NO se puede deshacer.`
+      `¿Eliminar TODO el roster de tu grupo (${ownCount} estudiante(s))? Esto borra también sus intentos y entregas. Los invitados de otros grupos no se borran. Esta acción NO se puede deshacer.`
     );
     if (!confirmed) return;
     const doubleConfirmed = window.confirm("Confirma de nuevo: esto elimina permanentemente a todos los estudiantes del grupo.");
@@ -160,7 +273,7 @@ export default function TeacherStudents() {
     setDeletingGroup(true);
     try {
       await api.deleteTeacherGroup();
-      setStudents([]);
+      setStudents((prev) => prev.filter((s) => s.guest_from != null));
     } catch (err) {
       window.alert("No se pudo eliminar el grupo.");
     } finally {
@@ -248,6 +361,16 @@ export default function TeacherStudents() {
           <RosterUploader onImported={loadStudents} />
         </section>
 
+        <GuestAdder
+          onAdded={(student) =>
+            setStudents((prev) =>
+              [...prev.filter((s) => s.id !== student.id), student].sort((a, b) =>
+                (a.full_name || "").localeCompare(b.full_name || "")
+              )
+            )
+          }
+        />
+
         {loading && <p className="text-slate-500">Cargando...</p>}
 
         {!loading && students.length > 0 && (
@@ -265,7 +388,17 @@ export default function TeacherStudents() {
               <tbody>
                 {students.map((s) => (
                   <tr key={s.id} className="border-b border-white/5 text-slate-300">
-                    <td className="px-4 py-2.5">{s.full_name}</td>
+                    <td className="px-4 py-2.5">
+                      {s.full_name}
+                      {s.guest_from != null && (
+                        <span
+                          className="ml-2 text-[11px] font-medium rounded-full border px-2 py-0.5 bg-violet-500/15 text-violet-300 border-violet-500/30"
+                          title={`Estudiante del Grupo ${s.guest_from} invitado a tu grupo`}
+                        >
+                          Invitado · G{s.guest_from}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5">{s.documento}</td>
                     <td className="px-4 py-2.5">{s.email}</td>
                     <td className="px-4 py-2.5">
@@ -287,13 +420,23 @@ export default function TeacherStudents() {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      <button
-                        onClick={() => handleDelete(s)}
-                        disabled={deletingId === s.id}
-                        className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
-                      >
-                        {deletingId === s.id ? "..." : "🗑 Eliminar"}
-                      </button>
+                      {s.guest_from != null ? (
+                        <button
+                          onClick={() => handleRemoveGuest(s)}
+                          disabled={deletingId === s.id}
+                          className="text-xs font-medium rounded-lg border border-white/15 text-slate-300 hover:bg-white/5 px-2 py-1 transition disabled:opacity-60"
+                        >
+                          {deletingId === s.id ? "..." : "Quitar invitado"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleDelete(s)}
+                          disabled={deletingId === s.id}
+                          className="text-xs font-medium rounded-lg border border-red-900/50 bg-red-950/40 text-red-400 hover:bg-red-900/40 hover:text-red-300 px-2 py-1 transition disabled:opacity-60"
+                        >
+                          {deletingId === s.id ? "..." : "🗑 Eliminar"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -306,7 +449,7 @@ export default function TeacherStudents() {
           <p className="text-slate-500">No hay estudiantes en tu grupo todavía.</p>
         )}
 
-        {!loading && students.length > 0 && (
+        {!loading && ownCount > 0 && (
           <button
             onClick={handleDeleteGroup}
             disabled={deletingGroup}

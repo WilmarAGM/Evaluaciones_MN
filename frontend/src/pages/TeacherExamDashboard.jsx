@@ -8,6 +8,17 @@ import rehypeKatex from "rehype-katex";
 import * as api from "../api";
 import ExamAccessPanel from "../components/ExamAccessPanel";
 
+function GuestBadge({ group }) {
+  return (
+    <span
+      className="ml-2 text-[11px] font-medium rounded-full border px-2 py-0.5 bg-violet-500/15 text-violet-300 border-violet-500/30"
+      title={`Estudiante del Grupo ${group} invitado a tu grupo`}
+    >
+      Invitado · G{group}
+    </span>
+  );
+}
+
 const STATUS_LABEL = {
   not_started: "No iniciado",
   in_progress: "En progreso",
@@ -317,6 +328,7 @@ export default function TeacherExamDashboard() {
                         <td className="px-5 py-2 text-white">
                           <span className="text-slate-500 mr-1.5">{isOpen ? "▾" : "▸"}</span>
                           {s.full_name}
+                          {s.guest_from != null && <GuestBadge group={s.guest_from} />}
                         </td>
                         <td className="px-5 py-2 text-slate-400">{s.email}</td>
                         <td className="px-5 py-2">

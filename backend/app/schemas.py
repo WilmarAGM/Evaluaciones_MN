@@ -200,6 +200,7 @@ class StudentRowOut(BaseModel):
     violations: int = 0
     manual_adjusted: bool = False  # alguno de sus puntajes fue corregido a mano
     manual_comments: list[str] = []
+    guest_from: Optional[int] = None  # grupo de origen si es invitado (ver models.GroupGuest)
 
 
 class BankProblemOut(BaseModel):
@@ -368,12 +369,26 @@ class AddStudentIn(BaseModel):
     email: str
 
 
+class GuestSearchOut(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    documento: str
+    group: Optional[int] = None  # grupo de origen
+    already_guest: bool = False
+
+
+class AddGuestIn(BaseModel):
+    student_id: int
+
+
 class StudentRosterOut(BaseModel):
     id: int
     full_name: Optional[str] = None
     email: str
     documento: str
     session_active: bool = False  # tiene una sesión abierta con actividad reciente
+    guest_from: Optional[int] = None  # grupo de origen si es invitado (ver models.GroupGuest)
 
     class Config:
         from_attributes = True

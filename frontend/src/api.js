@@ -397,6 +397,23 @@ export async function deleteTeacherGroup() {
   return data;
 }
 
+// ---- Invitados de otros grupos (docente) ----
+
+export async function searchGuestStudent(q) {
+  const { data } = await client.get("/api/teacher/guests/search", { params: { q } });
+  return data;
+}
+
+export async function addGuestStudent(studentId) {
+  const { data } = await client.post("/api/teacher/guests", { student_id: studentId });
+  return data;
+}
+
+export async function removeGuestStudent(studentId) {
+  const { data } = await client.delete(`/api/teacher/guests/${studentId}`);
+  return data;
+}
+
 export async function importStudentRoster(file) {
   const formData = new FormData();
   formData.append("file", file);

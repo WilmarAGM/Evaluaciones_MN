@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models, schemas, executor
@@ -346,6 +348,35 @@ def get_exam_or_404(db: Session, exam_id: int, group: int | None = None) -> mode
     return exam
 
 
+def student_groups(db: Session, student: models.Student) -> set[int]:
+    """Grupos cuyos exámenes ve un estudiante: el suyo más aquellos donde es
+    invitado (ver models.GroupGuest)."""
+    groups = {g for (g,) in db.query(models.GroupGuest.group).filter(models.GroupGuest.student_id == student.id)}
+    if student.group is not None:
+        groups.add(student.group)
+    return groups
+
+
+def get_student_exam_or_404(db: Session, exam_id: int, student: models.Student) -> models.Exam:
+    """Examen de alguno de los grupos del estudiante (el suyo o uno donde es
+    invitado); 404 si no, igual que get_exam_or_404 con group."""
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    if not exam or exam.group not in student_groups(db, student):
+        raise HTTPException(status_code=404, detail="Examen no encontrado")
+    return exam
+
+
+def in_group_filter(group: int):
+    """Filtro de Student para "pertenece al grupo": su grupo o invitado a él."""
+    guests = select(models.GroupGuest.student_id).where(models.GroupGuest.group == group)
+    return or_(models.Student.group == group, models.Student.id.in_(guests))
+
+
+def group_students_query(db: Session, group: int):
+    """Estudiantes (role student) de un grupo, incluidos los invitados."""
+    return db.query(models.Student).filter(models.Student.role == "student", in_group_filter(group))
+
+
 def find_submission(db: Session, student_id: int, problem_id: int, exam_id: int | None):
     """La respuesta de un estudiante a un problema EN UN EXAMEN (exam_id None =
     pruebas del docente en la vista previa, que no pertenecen a ningún intento)."""
@@ -377,16 +408,17 @@ def get_exam_for_student_problem(
         .all()
     ):
         candidates[attempt.exam_id] = attempt
+    groups = student_groups(db, student)
     for ep in problem.exam_problems:
-        if ep.exam.group == student.group and not ep.exam.slots:
+        if ep.exam.group in groups and not ep.exam.slots:
             candidates.setdefault(ep.exam_id, peek_attempt(db, student, ep.exam))
 
     if exam_id is not None:
         if exam_id in candidates:
-            return get_exam_or_404(db, exam_id, group=student.group)
+            return get_student_exam_or_404(db, exam_id, student)
         # El intento pudo crearse sin que aún se hayan sorteado sus problemas
         # (la página pide el examen y el inicio en paralelo): se resuelve aquí.
-        exam = get_exam_or_404(db, exam_id, group=student.group)
+        exam = get_student_exam_or_404(db, exam_id, student)
         if exam.slots and peek_attempt(db, student, exam) is not None:
             if problem.id in {p.id for p in resolve_exam_problems(db, student, exam)}:
                 return exam
@@ -397,11 +429,11 @@ def get_exam_for_student_problem(
     with_attempt = [a for a in candidates.values() if a is not None]
     active = [a for a in with_attempt if not attempt_status(a, db)["finished"]]
     if active:
-        return get_exam_or_404(db, max(active, key=lambda a: _aware(a.started_at)).exam_id, group=student.group)
+        return get_student_exam_or_404(db, max(active, key=lambda a: _aware(a.started_at)).exam_id, student)
     if len(candidates) == 1:
-        return get_exam_or_404(db, next(iter(candidates)), group=student.group)
+        return get_student_exam_or_404(db, next(iter(candidates)), student)
     if with_attempt:
-        return get_exam_or_404(db, max(with_attempt, key=lambda a: _aware(a.started_at)).exam_id, group=student.group)
+        return get_student_exam_or_404(db, max(with_attempt, key=lambda a: _aware(a.started_at)).exam_id, student)
     raise HTTPException(
         status_code=409,
         detail="Este problema pertenece a varios exámenes y no tienes un intento activo en ninguno.",
@@ -527,7 +559,7 @@ def student_problem_result(db: Session, student: models.Student, problem: models
 
 @app.get("/api/exams", response_model=list[schemas.ExamListOut])
 def list_exams(db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exams = db.query(models.Exam).filter(models.Exam.group == student.group).all()
+    exams = db.query(models.Exam).filter(models.Exam.group.in_(student_groups(db, student))).all()
     results = []
     for exam in exams:
         attempt = peek_attempt(db, student, exam)
@@ -619,7 +651,7 @@ def build_exam_out(exam: models.Exam, problems: list[models.Problem]) -> schemas
 
 @app.get("/api/exams/{exam_id}", response_model=schemas.ExamOut)
 def get_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = get_exam_or_404(db, exam_id, group=student.group)
+    exam = get_student_exam_or_404(db, exam_id, student)
     if peek_attempt(db, student, exam) is None:
         # Sin intento: mismas reglas que start_exam. Sin esto, un examen
         # cerrado dejaba ver sus enunciados (y con sorteo, crear el intento
@@ -633,7 +665,7 @@ def get_exam(exam_id: int, db: Session = Depends(get_db), student: models.Studen
 
 @app.post("/api/exams/{exam_id}/start", response_model=schemas.AttemptOut)
 def start_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = get_exam_or_404(db, exam_id, group=student.group)
+    exam = get_student_exam_or_404(db, exam_id, student)
     if not exam.is_open and peek_attempt(db, student, exam) is None:
         raise HTTPException(status_code=403, detail="El docente aún no ha habilitado este examen.")
     attempt = get_or_create_attempt(db, student, exam)
@@ -642,7 +674,7 @@ def start_exam(exam_id: int, db: Session = Depends(get_db), student: models.Stud
 
 @app.post("/api/exams/{exam_id}/finish", response_model=schemas.AttemptOut)
 def finish_exam(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = get_exam_or_404(db, exam_id, group=student.group)
+    exam = get_student_exam_or_404(db, exam_id, student)
     attempt = get_or_create_attempt(db, student, exam)
     if attempt.finished_at is None:
         attempt.finished_at = now()
@@ -671,7 +703,7 @@ def report_violation(
     intento se cierra y se anula con nota 0."""
     if payload.kind not in VIOLATION_KINDS:
         raise HTTPException(status_code=400, detail="Tipo de evento inválido.")
-    exam = get_exam_or_404(db, exam_id, group=student.group)
+    exam = get_student_exam_or_404(db, exam_id, student)
     attempt = peek_attempt(db, student, exam)
     if attempt is None:
         raise HTTPException(status_code=409, detail="No has iniciado este examen.")
@@ -702,7 +734,7 @@ def report_violation(
 
 @app.get("/api/exams/{exam_id}/results", response_model=schemas.ExamResultsOut)
 def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.Student = Depends(get_current_student)):
-    exam = get_exam_or_404(db, exam_id, group=student.group)
+    exam = get_student_exam_or_404(db, exam_id, student)
     # peek, no get_or_create: consultar resultados no debe arrancar el examen.
     attempt = peek_attempt(db, student, exam)
     if attempt is None:
@@ -1082,12 +1114,7 @@ def _slot_representative_problem(slot: models.ExamSlot) -> models.Problem | None
 
 
 def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExamDashboardOut:
-    students = (
-        db.query(models.Student)
-        .filter(models.Student.role == "student", models.Student.group == exam.group)
-        .order_by(models.Student.full_name)
-        .all()
-    )
+    students = group_students_query(db, exam.group).order_by(models.Student.full_name).all()
     if exam.restricted:
         # Solo los habilitados, más quien ya tenga un intento (fue quitado de
         # la lista después de empezar: su trabajo sigue contando).
@@ -1175,6 +1202,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 violations=(attempt.violations or 0) if attempt else 0,
                 manual_adjusted=manual_adjusted,
                 manual_comments=manual_comments,
+                guest_from=student.group if student.group != exam.group else None,
             )
         )
         if status == "finished":
@@ -1606,9 +1634,7 @@ def teacher_toggle_exam_open(
 def _exam_access_out(db: Session, exam: models.Exam, **result) -> schemas.ExamAccessOut:
     group_students = {
         normalize_documento(s.documento): s
-        for s in db.query(models.Student)
-        .filter(models.Student.role == "student", models.Student.group == exam.group)
-        .all()
+        for s in group_students_query(db, exam.group).all()
     }
     allowed = []
     for entry in exam.allowed_students:
@@ -1633,9 +1659,7 @@ def _add_allowed_documentos(db: Session, exam: models.Exam, raw_docs) -> dict:
     existing = {a.documento for a in exam.allowed_students}
     group_docs = {
         normalize_documento(row.documento)
-        for row in db.query(models.Student.documento)
-        .filter(models.Student.role == "student", models.Student.group == exam.group)
-        .all()
+        for row in group_students_query(db, exam.group).with_entities(models.Student.documento).all()
     }
     added, already, unknown = 0, 0, []
     for raw in raw_docs:
@@ -1808,17 +1832,7 @@ def teacher_student_submissions(
     teacher: models.Student = Depends(get_current_teacher),
 ):
     exam = get_exam_or_404(db, exam_id, group=teacher.group)
-    student = (
-        db.query(models.Student)
-        .filter(
-            models.Student.id == student_id,
-            models.Student.role == "student",
-            models.Student.group == teacher.group,
-        )
-        .first()
-    )
-    if not student:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    student = _get_group_student_or_404(db, student_id, teacher.group)
 
     problems_out = []
     total_score = 0.0
@@ -1926,11 +1940,8 @@ def teacher_export_xlsx(
 
 
 def _get_group_student_or_404(db: Session, student_id: int, group: int) -> models.Student:
-    student = (
-        db.query(models.Student)
-        .filter(models.Student.id == student_id, models.Student.role == "student", models.Student.group == group)
-        .first()
-    )
+    """Estudiante del grupo o invitado a él."""
+    student = group_students_query(db, group).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
     return student
@@ -2274,12 +2285,7 @@ def admin_load_bank_from_tex(
 
 @app.get("/api/teacher/students", response_model=list[schemas.StudentRosterOut])
 def teacher_list_students(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
-    students = (
-        db.query(models.Student)
-        .filter(models.Student.role == "student", models.Student.group == teacher.group)
-        .order_by(models.Student.full_name)
-        .all()
-    )
+    students = group_students_query(db, teacher.group).order_by(models.Student.full_name).all()
     return [
         schemas.StudentRosterOut(
             id=st.id,
@@ -2287,9 +2293,123 @@ def teacher_list_students(db: Session = Depends(get_db), teacher: models.Student
             email=st.email,
             documento=st.documento,
             session_active=has_active_session(st),
+            guest_from=st.group if st.group != teacher.group else None,
         )
         for st in students
     ]
+
+
+# ---- Invitados de otros grupos (ver models.GroupGuest) ----
+
+
+@app.get("/api/teacher/guests/search", response_model=schemas.GuestSearchOut | None)
+def teacher_search_guest(
+    q: str, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Busca un estudiante de OTRO grupo por correo o documento EXACTOS (no
+    por coincidencia parcial: un docente no debe poder listar los rosters
+    ajenos). None si no hay nadie."""
+    q = q.strip()
+    if not q:
+        return None
+    if "@" in q:
+        student = (
+            db.query(models.Student)
+            .filter(models.Student.role == "student", models.Student.email == q.lower())
+            .first()
+        )
+    else:
+        doc = normalize_documento(q)
+        student = next(
+            (
+                st
+                for st in db.query(models.Student).filter(models.Student.role == "student").all()
+                if doc and normalize_documento(st.documento) == doc
+            ),
+            None,
+        )
+    if student is None:
+        return None
+    if student.group == teacher.group:
+        raise HTTPException(status_code=409, detail="Ese estudiante ya pertenece a tu grupo.")
+    already = (
+        db.query(models.GroupGuest)
+        .filter(models.GroupGuest.student_id == student.id, models.GroupGuest.group == teacher.group)
+        .first()
+        is not None
+    )
+    return schemas.GuestSearchOut(
+        id=student.id,
+        full_name=student.full_name,
+        email=student.email,
+        documento=student.documento,
+        group=student.group,
+        already_guest=already,
+    )
+
+
+@app.post("/api/teacher/guests", response_model=schemas.StudentRosterOut)
+def teacher_add_guest(
+    payload: schemas.AddGuestIn, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    student = (
+        db.query(models.Student)
+        .filter(models.Student.id == payload.student_id, models.Student.role == "student")
+        .first()
+    )
+    if not student:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    if student.group == teacher.group:
+        raise HTTPException(status_code=409, detail="Ese estudiante ya pertenece a tu grupo.")
+    exists = (
+        db.query(models.GroupGuest)
+        .filter(models.GroupGuest.student_id == student.id, models.GroupGuest.group == teacher.group)
+        .first()
+    )
+    if not exists:
+        db.add(models.GroupGuest(student_id=student.id, group=teacher.group, added_by=teacher.id))
+        try:
+            db.commit()
+        except IntegrityError:  # doble clic: otra petición ya lo invitó
+            db.rollback()
+    return schemas.StudentRosterOut(
+        id=student.id,
+        full_name=student.full_name,
+        email=student.email,
+        documento=student.documento,
+        session_active=has_active_session(student),
+        guest_from=student.group,
+    )
+
+
+@app.delete("/api/teacher/guests/{student_id}")
+def teacher_remove_guest(
+    student_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Quita la invitación; no borra nada del estudiante. Si ya empezó un
+    examen de este grupo se rechaza: quitarlo ocultaría ese intento del
+    dashboard del docente y de los resultados del estudiante."""
+    guest = (
+        db.query(models.GroupGuest)
+        .filter(models.GroupGuest.student_id == student_id, models.GroupGuest.group == teacher.group)
+        .first()
+    )
+    if not guest:
+        raise HTTPException(status_code=404, detail="Ese estudiante no es invitado de tu grupo.")
+    started = (
+        db.query(models.ExamAttempt.id)
+        .join(models.Exam, models.Exam.id == models.ExamAttempt.exam_id)
+        .filter(models.ExamAttempt.student_id == student_id, models.Exam.group == teacher.group)
+        .first()
+    )
+    if started:
+        raise HTTPException(
+            status_code=409,
+            detail="Este invitado ya empezó un examen de tu grupo; no se puede quitar sin perder de vista ese intento.",
+        )
+    db.delete(guest)
+    db.commit()
+    return {"deleted": True, "student_id": student_id}
 
 
 @app.post("/api/teacher/students", response_model=schemas.StudentRosterOut)
@@ -2302,7 +2422,14 @@ def teacher_add_student(
     documento = payload.documento.strip()
     if not documento:
         raise HTTPException(status_code=400, detail="El documento de identidad es obligatorio")
-    if db.query(models.Student).filter(models.Student.email == email).first():
+    existing = db.query(models.Student).filter(models.Student.email == email).first()
+    if existing:
+        if existing.role == "student" and existing.group not in (None, teacher.group):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ese correo ya es de un estudiante del Grupo {existing.group}. "
+                "Para que presente tus exámenes, agrégalo como invitado.",
+            )
         raise HTTPException(status_code=409, detail="Ya existe una cuenta registrada con ese correo")
 
     student = models.Student(
@@ -2346,6 +2473,7 @@ def teacher_delete_student(
     db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id == student.id).delete(
         synchronize_session=False
     )
+    db.query(models.GroupGuest).filter(models.GroupGuest.student_id == student.id).delete(synchronize_session=False)
     db.delete(student)
     db.commit()
     return {"deleted": True, "student_id": student_id}
@@ -2370,6 +2498,9 @@ def delete_students_with_data(db: Session, student_ids: list[int]) -> int:
     db.query(models.ExamAttempt).filter(models.ExamAttempt.student_id.in_(student_ids)).delete(
         synchronize_session=False
     )
+    db.query(models.GroupGuest).filter(models.GroupGuest.student_id.in_(student_ids)).delete(
+        synchronize_session=False
+    )
     db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)
     db.commit()
     return len(student_ids)
@@ -2379,7 +2510,8 @@ def delete_students_with_data(db: Session, student_ids: list[int]) -> int:
 def teacher_delete_group(db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)):
     """Elimina TODO el roster del grupo del docente (y sus intentos/entregas).
     Acción destructiva e irreversible — pensada para arrancar un semestre
-    nuevo desde cero."""
+    nuevo desde cero. Los invitados de otros grupos NO se borran (su cuenta
+    es de su grupo); se quitan uno por uno."""
     student_ids = [
         row.id
         for row in db.query(models.Student.id)

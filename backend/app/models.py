@@ -69,6 +69,11 @@ class Exam(Base):
     # Es una bandera explícita (y no "lista vacía = todos") para que quitar el
     # último documento no abra el examen de golpe a todo el grupo.
     restricted = Column(Boolean, default=False, nullable=False, server_default="0")
+    # Revisión: mientras sea False el estudiante que terminó solo ve "examen
+    # entregado"; con True ve nota, enunciado, su código y criterios, y puede
+    # pedir revisión de cada problema (ReviewRequest). Los exámenes que ya
+    # existían quedaron en True (migrate_review.py) para no ocultar nada.
+    review_open = Column(Boolean, default=False, nullable=False, server_default="0")
 
     allowed_students = relationship(
         "ExamAllowedStudent", back_populates="exam", cascade="all, delete-orphan",
@@ -105,6 +110,29 @@ class ExamAllowedStudent(Base):
     documento = Column(String, nullable=False)
 
     exam = relationship("Exam", back_populates="allowed_students")
+
+
+class ReviewRequest(Base):
+    """Solicitud de revisión de un estudiante sobre un problema de un examen
+    (una por problema). El docente la acepta (con una corrección manual en la
+    Submission) o la rechaza, siempre con una respuesta escrita."""
+
+    __tablename__ = "review_requests"
+    __table_args__ = (UniqueConstraint("exam_id", "student_id", "problem_id", name="uq_review_request"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    exam_id = Column(Integer, ForeignKey("exams.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    problem_id = Column(Integer, ForeignKey("problems.id"), nullable=False)
+    message = Column(Text, nullable=False)
+    status = Column(String, default="pending", nullable=False)  # pending | accepted | rejected
+    response = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, nullable=True)  # id del docente (sin FK, igual que Submission.manual_by)
+
+    exam = relationship("Exam")
+    student = relationship("Student")
 
 
 class GroupGuest(Base):

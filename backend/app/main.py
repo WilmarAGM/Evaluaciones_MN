@@ -742,7 +742,26 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
     status = attempt_status(attempt, db)
     if not status["finished"]:
         raise HTTPException(status_code=403, detail="Aún no has finalizado el examen.")
+    if not exam.review_open:
+        # Revisión cerrada: solo "entregado" (y la anulación, que el estudiante
+        # ya vio en vivo), sin nota ni detalle.
+        return schemas.ExamResultsOut(
+            exam_title=exam.title,
+            total_score=0.0,
+            max_score=0.0,
+            problems=[],
+            annulled=status["annulled"],
+            annul_reason=status["annul_reason"],
+            violations=status["violations"],
+            review_open=False,
+        )
 
+    reviews = {
+        r.problem_id: r
+        for r in db.query(models.ReviewRequest).filter(
+            models.ReviewRequest.exam_id == exam.id, models.ReviewRequest.student_id == student.id
+        )
+    }
     problems_out = []
     total_score = 0.0
     max_score = 0.0
@@ -762,6 +781,8 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
                 stdout=submission.stdout if submission else None,
                 stderr=submission.stderr if submission else None,
                 **_manual_fields(submission),
+                statement_md=problem.statement_md,
+                review=reviews.get(problem.id),
             )
         )
         total_score += score
@@ -776,6 +797,57 @@ def exam_results(exam_id: int, db: Session = Depends(get_db), student: models.St
         annul_reason=status["annul_reason"],
         violations=status["violations"],
     )
+
+
+REVIEW_MESSAGE_MAX = 2000
+
+
+@app.post("/api/exams/{exam_id}/problems/{problem_id}/review-request", response_model=schemas.ReviewRequestOut)
+def request_review(
+    exam_id: int,
+    problem_id: int,
+    payload: schemas.ReviewRequestIn,
+    db: Session = Depends(get_db),
+    student: models.Student = Depends(get_current_student),
+):
+    """El estudiante pide que el docente revise su nota en un problema. Una
+    sola solicitud por problema, solo con el intento terminado y mientras el
+    docente tenga la revisión habilitada."""
+    if student.role != "student":
+        raise HTTPException(status_code=403, detail="Solo los estudiantes pueden solicitar revisión.")
+    exam = get_student_exam_or_404(db, exam_id, student)
+    attempt = peek_attempt(db, student, exam)
+    if attempt is None or not attempt_status(attempt, db)["finished"]:
+        raise HTTPException(status_code=403, detail="Aún no has finalizado el examen.")
+    if not exam.review_open:
+        raise HTTPException(status_code=403, detail="La revisión de este examen no está habilitada.")
+    if problem_id not in {p.id for p in resolve_exam_problems(db, student, exam)}:
+        raise HTTPException(status_code=404, detail="Ese problema no forma parte de tu examen.")
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Explica brevemente por qué debería revisarse tu nota.")
+    if len(message) > REVIEW_MESSAGE_MAX:
+        raise HTTPException(status_code=400, detail=f"El texto no puede pasar de {REVIEW_MESSAGE_MAX} caracteres.")
+
+    def already():
+        return HTTPException(status_code=409, detail="Ya enviaste una solicitud de revisión para este problema.")
+
+    exists = (
+        db.query(models.ReviewRequest)
+        .filter_by(exam_id=exam.id, student_id=student.id, problem_id=problem_id)
+        .first()
+    )
+    if exists:
+        raise already()
+    review = models.ReviewRequest(exam_id=exam.id, student_id=student.id, problem_id=problem_id, message=message)
+    db.add(review)
+    try:
+        db.commit()
+    except IntegrityError:  # doble clic
+        db.rollback()
+        raise already()
+    db.refresh(review)
+    return review
 
 
 def _clear_manual_score(submission: models.Submission) -> None:
@@ -1115,6 +1187,11 @@ def _slot_representative_problem(slot: models.ExamSlot) -> models.Problem | None
 
 def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExamDashboardOut:
     students = group_students_query(db, exam.group).order_by(models.Student.full_name).all()
+    pending_by_student: dict[int, int] = {}
+    for (sid,) in db.query(models.ReviewRequest.student_id).filter(
+        models.ReviewRequest.exam_id == exam.id, models.ReviewRequest.status == "pending"
+    ):
+        pending_by_student[sid] = pending_by_student.get(sid, 0) + 1
     if exam.restricted:
         # Solo los habilitados, más quien ya tenga un intento (fue quitado de
         # la lista después de empezar: su trabajo sigue contando).
@@ -1203,6 +1280,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
                 manual_adjusted=manual_adjusted,
                 manual_comments=manual_comments,
                 guest_from=student.group if student.group != exam.group else None,
+                pending_reviews=pending_by_student.get(student.id, 0),
             )
         )
         if status == "finished":
@@ -1276,6 +1354,7 @@ def compute_exam_dashboard(db: Session, exam: models.Exam) -> schemas.TeacherExa
         score_distribution=distribution,
         problems=problems_out,
         students=student_rows,
+        review_open=bool(exam.review_open),
     )
 
 
@@ -1289,6 +1368,10 @@ def _to_teacher_list_out(db: Session, exam: models.Exam) -> schemas.TeacherExamL
         is_open=exam.is_open,
         max_violations=exam.max_violations or 0,
         restricted=bool(exam.restricted),
+        review_open=bool(exam.review_open),
+        pending_reviews=db.query(models.ReviewRequest)
+        .filter(models.ReviewRequest.exam_id == exam.id, models.ReviewRequest.status == "pending")
+        .count(),
         total_students=dashboard.total_students,
         not_started=dashboard.not_started,
         in_progress=dashboard.in_progress,
@@ -1806,6 +1889,7 @@ def teacher_delete_exam(
     exam = get_exam_or_404(db, exam_id, group=teacher.group)
 
     db.query(models.Submission).filter(models.Submission.exam_id == exam_id).delete(synchronize_session=False)
+    db.query(models.ReviewRequest).filter(models.ReviewRequest.exam_id == exam_id).delete(synchronize_session=False)
 
     attempt_ids = [
         row.id for row in db.query(models.ExamAttempt.id).filter(models.ExamAttempt.exam_id == exam_id).all()
@@ -1995,6 +2079,23 @@ def teacher_set_manual_score(
     que lo usan el dashboard, el .xlsx y los resultados del estudiante."""
     exam = get_exam_or_404(db, exam_id, group=teacher.group)
     student = _get_group_student_or_404(db, student_id, teacher.group)
+    manual = _apply_manual_score(db, teacher, exam, student, problem_id, payload.score, payload.comment)
+    db.commit()
+    return {"saved": True, "manual": manual}
+
+
+def _apply_manual_score(
+    db: Session,
+    teacher: models.Student,
+    exam: models.Exam,
+    student: models.Student,
+    problem_id: int,
+    score: float | None,
+    comment: str | None,
+) -> bool:
+    """Valida y aplica (sin commit) una corrección manual; devuelve si quedó
+    corrección. Compartida por la corrección directa y por aceptar una
+    solicitud de revisión."""
     attempt = peek_attempt(db, student, exam)
 
     if exam.slots:
@@ -2014,13 +2115,12 @@ def teacher_set_manual_score(
     problem = get_problem_or_404(db, problem_id)
     submission = find_submission(db, student.id, problem.id, exam.id)
 
-    if payload.score is None:
+    if score is None:
         if submission is not None:
             _clear_manual_score(submission)
-            db.commit()
-        return {"saved": True, "manual": False}
+        return False
 
-    if not (0 <= payload.score <= problem.max_score):
+    if not (0 <= score <= problem.max_score):
         raise HTTPException(
             status_code=400, detail=f"El puntaje debe estar entre 0 y {problem.max_score:g}."
         )
@@ -2031,12 +2131,97 @@ def teacher_set_manual_score(
             student_id=student.id, problem_id=problem.id, exam_id=exam.id, code="", total_score=0.0, checks_report="[]"
         )
         db.add(submission)
-    submission.manual_score = round(payload.score, 2)
-    submission.manual_comment = (payload.comment or "").strip() or None
+    submission.manual_score = round(score, 2)
+    submission.manual_comment = (comment or "").strip() or None
     submission.manual_by = teacher.id
     submission.manual_at = now()
+    return True
+
+
+# ---- Revisión de exámenes (ver Exam.review_open y ReviewRequest) ----
+
+
+@app.post("/api/teacher/exams/{exam_id}/toggle-review", response_model=schemas.TeacherToggleReviewOut)
+def teacher_toggle_exam_review(
+    exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    """Habilita/cierra la revisión: con ella abierta los estudiantes que
+    terminaron ven su nota y detalle y pueden pedir revisión. Cerrarla no
+    borra ni bloquea responder las solicitudes ya enviadas."""
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    exam.review_open = not exam.review_open
     db.commit()
-    return {"saved": True, "manual": True}
+    return schemas.TeacherToggleReviewOut(exam_id=exam.id, review_open=exam.review_open)
+
+
+def _teacher_review_out(db: Session, review: models.ReviewRequest) -> schemas.TeacherReviewRequestOut:
+    student = review.student
+    problem = get_problem_or_404(db, review.problem_id)
+    submission, score, _ = student_problem_result(db, student, problem, review.exam)
+    attempt = peek_attempt(db, student, review.exam)
+    if attempt is not None and attempt.annulled_at is not None:
+        score = 0.0
+    return schemas.TeacherReviewRequestOut(
+        id=review.id,
+        student_id=student.id,
+        student_name=student.full_name,
+        student_email=student.email,
+        problem_id=problem.id,
+        problem_title=problem.title,
+        message=review.message,
+        status=review.status,
+        response=review.response,
+        created_at=review.created_at,
+        resolved_at=review.resolved_at,
+        score=score,
+        max_score=problem.max_score,
+        auto_score=(submission.total_score or 0.0) if submission else 0.0,
+        manual=submission is not None and submission.manual_score is not None,
+    )
+
+
+@app.get("/api/teacher/exams/{exam_id}/review-requests", response_model=list[schemas.TeacherReviewRequestOut])
+def teacher_list_review_requests(
+    exam_id: int, db: Session = Depends(get_db), teacher: models.Student = Depends(get_current_teacher)
+):
+    exam = get_exam_or_404(db, exam_id, group=teacher.group)
+    reviews = db.query(models.ReviewRequest).filter(models.ReviewRequest.exam_id == exam.id).all()
+    # Pendientes primero (las más antiguas arriba), luego las resueltas (las más recientes arriba).
+    pending = sorted((r for r in reviews if r.status == "pending"), key=lambda r: _aware(r.created_at))
+    resolved = sorted(
+        (r for r in reviews if r.status != "pending"), key=lambda r: _aware(r.resolved_at), reverse=True
+    )
+    return [_teacher_review_out(db, r) for r in pending + resolved]
+
+
+@app.post("/api/teacher/review-requests/{review_id}/resolve", response_model=schemas.TeacherReviewRequestOut)
+def teacher_resolve_review_request(
+    review_id: int,
+    payload: schemas.ResolveReviewIn,
+    db: Session = Depends(get_db),
+    teacher: models.Student = Depends(get_current_teacher),
+):
+    """Acepta (con la nueva nota del problema, que queda como corrección
+    manual) o rechaza una solicitud. La respuesta escrita es obligatoria y la
+    ve el estudiante."""
+    review = db.query(models.ReviewRequest).filter(models.ReviewRequest.id == review_id).first()
+    if review is None or review.exam.group != teacher.group:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if review.status != "pending":
+        raise HTTPException(status_code=409, detail="Esta solicitud ya fue respondida.")
+    response = (payload.response or "").strip()
+    if not response:
+        raise HTTPException(status_code=400, detail="Escribe una respuesta para el estudiante.")
+    if payload.accept:
+        if payload.score is None:
+            raise HTTPException(status_code=400, detail="Indica la nueva nota del problema.")
+        _apply_manual_score(db, teacher, review.exam, review.student, review.problem_id, payload.score, response)
+    review.status = "accepted" if payload.accept else "rejected"
+    review.response = response
+    review.resolved_at = now()
+    review.resolved_by = teacher.id
+    db.commit()
+    return _teacher_review_out(db, review)
 
 
 # ---- Vistas de admin (gestión de cuentas docente, una por grupo) ----
@@ -2474,6 +2659,9 @@ def teacher_delete_student(
         synchronize_session=False
     )
     db.query(models.GroupGuest).filter(models.GroupGuest.student_id == student.id).delete(synchronize_session=False)
+    db.query(models.ReviewRequest).filter(models.ReviewRequest.student_id == student.id).delete(
+        synchronize_session=False
+    )
     db.delete(student)
     db.commit()
     return {"deleted": True, "student_id": student_id}
@@ -2499,6 +2687,9 @@ def delete_students_with_data(db: Session, student_ids: list[int]) -> int:
         synchronize_session=False
     )
     db.query(models.GroupGuest).filter(models.GroupGuest.student_id.in_(student_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(models.ReviewRequest).filter(models.ReviewRequest.student_id.in_(student_ids)).delete(
         synchronize_session=False
     )
     db.query(models.Student).filter(models.Student.id.in_(student_ids)).delete(synchronize_session=False)

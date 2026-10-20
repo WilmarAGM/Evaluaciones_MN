@@ -126,11 +126,32 @@ class ProblemResultOut(BaseModel):
     auto_score: Optional[float] = None
     manual: bool = False
     manual_comment: Optional[str] = None
+    # Solicitud de revisión del estudiante sobre este problema (si la hizo).
+    review: Optional["ReviewRequestOut"] = None
 
 
 class ManualScoreIn(BaseModel):
     score: Optional[float] = None  # None = quitar la corrección y volver a la automática
     comment: Optional[str] = None
+
+
+class ReviewRequestOut(BaseModel):
+    id: int
+    message: str
+    status: str  # pending | accepted | rejected
+    response: Optional[str] = None
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+ProblemResultOut.model_rebuild()
+
+
+class ReviewRequestIn(BaseModel):
+    message: str
 
 
 class ExamResultsOut(BaseModel):
@@ -141,6 +162,38 @@ class ExamResultsOut(BaseModel):
     annulled: bool = False
     annul_reason: Optional[str] = None
     violations: int = 0
+    # Vista del estudiante: False = el docente aún no habilita la revisión
+    # (total/problems vienen vacíos). La del docente siempre lo trae en True.
+    review_open: bool = True
+
+
+class TeacherReviewRequestOut(BaseModel):
+    id: int
+    student_id: int
+    student_name: Optional[str] = None
+    student_email: str
+    problem_id: int
+    problem_title: str
+    message: str
+    status: str
+    response: Optional[str] = None
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    score: float  # nota efectiva actual del problema
+    max_score: float
+    auto_score: float
+    manual: bool = False
+
+
+class ResolveReviewIn(BaseModel):
+    accept: bool
+    score: Optional[float] = None  # obligatorio si accept: la nueva nota del problema
+    response: str
+
+
+class TeacherToggleReviewOut(BaseModel):
+    exam_id: int
+    review_open: bool
 
 
 # ---- Vistas de docente ----
@@ -154,6 +207,8 @@ class TeacherExamListOut(BaseModel):
     is_open: bool = True
     max_violations: int = 0
     restricted: bool = False
+    review_open: bool = False
+    pending_reviews: int = 0
     total_students: int
     not_started: int
     in_progress: int
@@ -200,6 +255,7 @@ class StudentRowOut(BaseModel):
     violations: int = 0
     manual_adjusted: bool = False  # alguno de sus puntajes fue corregido a mano
     manual_comments: list[str] = []
+    pending_reviews: int = 0  # solicitudes de revisión sin responder
     guest_from: Optional[int] = None  # grupo de origen si es invitado (ver models.GroupGuest)
 
 
@@ -334,6 +390,7 @@ class TeacherExamDashboardOut(BaseModel):
     score_distribution: list[ScoreBucketOut]
     problems: list[ProblemStatOut]
     students: list[StudentRowOut]
+    review_open: bool = False
 
 
 # ---- Vistas de admin ----

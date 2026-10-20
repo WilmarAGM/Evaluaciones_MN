@@ -30,6 +30,25 @@ export default function TeacherExams() {
     }
   }
 
+  async function handleToggleReview(exam) {
+    if (
+      !exam.review_open &&
+      !window.confirm(
+        `¿Habilitar la revisión de "${exam.title}"?\n\nLos estudiantes que ya terminaron verán su nota, sus respuestas y los criterios, y podrán solicitar revisión de cada ejercicio. Puedes cerrarla cuando quieras.`
+      )
+    )
+      return;
+    setTogglingId(`r${exam.id}`);
+    try {
+      const { review_open } = await api.toggleExamReview(exam.id);
+      setExams((prev) => prev.map((e) => (e.id === exam.id ? { ...e, review_open } : e)));
+    } catch (err) {
+      window.alert(err.response?.data?.detail || "No se pudo cambiar la revisión.");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   async function handleDelete(exam) {
     const confirmed = window.confirm(
       `¿Eliminar el examen "${exam.title}"?\n\nEsto borrará también, de forma permanente, los intentos y las respuestas que los estudiantes guardaron EN ESTE examen. Las respuestas de otros exámenes (aunque compartan banco) no se tocan. Esta acción no se puede deshacer.`
@@ -132,6 +151,20 @@ export default function TeacherExams() {
               {exam.restricted && (
                 <p className="text-xs mt-1 text-amber-400/90">👥 Solo estudiantes habilitados por documento</p>
               )}
+              <p className={`text-xs mt-1 ${exam.review_open ? "text-sky-300" : "text-slate-500"}`}>
+                {exam.review_open ? "📝 Revisión habilitada: los estudiantes ven su nota" : "Revisión cerrada: los estudiantes no ven su nota"}
+              </p>
+              {exam.pending_reviews > 0 && (
+                <Link
+                  to={`/teacher/exams/${exam.id}#revisiones`}
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-sm text-amber-200 hover:bg-amber-500/25 transition"
+                >
+                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-bold text-black">
+                    {exam.pending_reviews}
+                  </span>
+                  {exam.pending_reviews === 1 ? "solicitud de revisión pendiente" : "solicitudes de revisión pendientes"} →
+                </Link>
+              )}
 
               <div className="grid grid-cols-3 gap-2 mt-4 text-center">
                 <div className="rounded-lg bg-black/20 py-2">
@@ -174,6 +207,22 @@ export default function TeacherExams() {
                   : exam.is_open
                   ? "Deshabilitar examen"
                   : "Habilitar examen"}
+              </button>
+
+              <button
+                onClick={() => handleToggleReview(exam)}
+                disabled={togglingId === `r${exam.id}`}
+                className={`w-full mt-2 rounded-lg text-sm font-medium px-4 py-2 transition disabled:opacity-60 ${
+                  exam.review_open
+                    ? "bg-slate-600/20 text-slate-300 border border-slate-500/30 hover:bg-slate-600/30"
+                    : "bg-sky-600/20 text-sky-300 border border-sky-500/30 hover:bg-sky-600/30"
+                }`}
+              >
+                {togglingId === `r${exam.id}`
+                  ? "Actualizando..."
+                  : exam.review_open
+                  ? "Cerrar revisión"
+                  : "📝 Habilitar revisión"}
               </button>
 
               <button

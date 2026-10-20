@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import * as api from "../api";
 import ExamAccessPanel from "../components/ExamAccessPanel";
+import ReviewRequestsPanel from "../components/ReviewRequestsPanel";
 
 function GuestBadge({ group }) {
   return (
@@ -181,6 +182,27 @@ export default function TeacherExamDashboard() {
     }
   }
 
+  async function handleReviewChange(studentId) {
+    if (studentId != null) {
+      // Su nota pudo cambiar: el detalle cacheado ya no sirve.
+      setDetailsById((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+      if (expandedId === studentId) setExpandedId(null);
+    }
+    await loadDashboard();
+  }
+
+  function openStudent(studentId) {
+    if (expandedId !== studentId) toggleStudent(studentId);
+    setTimeout(
+      () => document.getElementById(`student-${studentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      50
+    );
+  }
+
   async function handleDownload() {
     setDownloading(true);
     try {
@@ -250,6 +272,13 @@ export default function TeacherExamDashboard() {
           examId={examId}
           onChange={loadDashboard}
           initialError={location.state?.accessError || ""}
+        />
+
+        <ReviewRequestsPanel
+          examId={examId}
+          reviewOpen={dash.review_open}
+          onChange={handleReviewChange}
+          onOpenStudent={openStudent}
         />
 
         {/* Distribución de notas */}
@@ -322,6 +351,7 @@ export default function TeacherExamDashboard() {
                   return (
                     <Fragment key={s.student_id}>
                       <tr
+                        id={`student-${s.student_id}`}
                         onClick={() => toggleStudent(s.student_id)}
                         className="hover:bg-white/[0.03] cursor-pointer select-none"
                       >
@@ -329,6 +359,14 @@ export default function TeacherExamDashboard() {
                           <span className="text-slate-500 mr-1.5">{isOpen ? "▾" : "▸"}</span>
                           {s.full_name}
                           {s.guest_from != null && <GuestBadge group={s.guest_from} />}
+                          {s.pending_reviews > 0 && (
+                            <span
+                              className="ml-2 text-[11px] font-medium rounded-full border px-2 py-0.5 bg-amber-500/15 text-amber-300 border-amber-500/30"
+                              title="Solicitudes de revisión sin responder (ver sección Revisión)"
+                            >
+                              ✋ {s.pending_reviews} revisión{s.pending_reviews > 1 ? "es" : ""}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-2 text-slate-400">{s.email}</td>
                         <td className="px-5 py-2">

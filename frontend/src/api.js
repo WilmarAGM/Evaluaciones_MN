@@ -371,6 +371,28 @@ export async function loadAdminBankFromTex(bankId, file, maxProblems) {
   return data;
 }
 
+// ---- Revisión de exámenes ----
+
+export async function requestReview(examId, problemId, message) {
+  const { data } = await client.post(`/api/exams/${examId}/problems/${problemId}/review-request`, { message });
+  return data;
+}
+
+export async function toggleExamReview(examId) {
+  const { data } = await client.post(`/api/teacher/exams/${examId}/toggle-review`);
+  return data;
+}
+
+export async function getReviewRequests(examId) {
+  const { data } = await client.get(`/api/teacher/exams/${examId}/review-requests`);
+  return data;
+}
+
+export async function resolveReviewRequest(reviewId, { accept, score, response }) {
+  const { data } = await client.post(`/api/teacher/review-requests/${reviewId}/resolve`, { accept, score, response });
+  return data;
+}
+
 // ---- Roster de estudiantes (docente) ----
 
 export async function getTeacherStudents() {

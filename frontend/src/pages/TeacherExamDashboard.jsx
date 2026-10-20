@@ -7,7 +7,7 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import * as api from "../api";
 import ExamAccessPanel from "../components/ExamAccessPanel";
-import ReviewRequestsPanel from "../components/ReviewRequestsPanel";
+import ReviewRequestsPanel, { InlineReview } from "../components/ReviewRequestsPanel";
 
 function GuestBadge({ group }) {
   return (
@@ -126,6 +126,8 @@ export default function TeacherExamDashboard() {
   const [expandedId, setExpandedId] = useState(null);
   const [detailsById, setDetailsById] = useState({});
   const [loadingId, setLoadingId] = useState(null);
+  const [reviews, setReviews] = useState(null);
+  const [reviewsError, setReviewsError] = useState("");
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -137,8 +139,16 @@ export default function TeacherExamDashboard() {
       .catch(() => setError("No se pudo cargar el dashboard."));
   }
 
+  function loadReviews() {
+    return api
+      .getReviewRequests(examId)
+      .then(setReviews)
+      .catch(() => setReviewsError("No se pudieron cargar las solicitudes de revisión."));
+  }
+
   useEffect(() => {
     loadDashboard();
+    loadReviews();
   }, [examId]);
 
   async function reinstate(studentId) {
@@ -160,7 +170,8 @@ export default function TeacherExamDashboard() {
   async function refreshStudent(studentId) {
     const data = await api.getTeacherStudentSubmissions(examId, studentId);
     setDetailsById((prev) => ({ ...prev, [studentId]: data }));
-    await loadDashboard();
+    // La nota actual que muestran sus solicitudes de revisión también cambió.
+    await Promise.all([loadDashboard(), loadReviews()]);
   }
 
   async function toggleStudent(studentId) {
@@ -182,16 +193,20 @@ export default function TeacherExamDashboard() {
     }
   }
 
-  async function handleReviewChange(studentId) {
-    if (studentId != null) {
-      // Su nota pudo cambiar: el detalle cacheado ya no sirve.
-      setDetailsById((prev) => {
-        const next = { ...prev };
-        delete next[studentId];
-        return next;
-      });
-      if (expandedId === studentId) setExpandedId(null);
+  // Se respondió una solicitud (desde el panel o desde el detalle del
+  // estudiante): su nota pudo cambiar, así que el detalle cacheado se recarga.
+  async function handleReviewResolved(updated) {
+    setReviews((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    const studentId = updated.student_id;
+    if (expandedId === studentId) {
+      await refreshStudent(studentId);
+      return;
     }
+    setDetailsById((prev) => {
+      const next = { ...prev };
+      delete next[studentId];
+      return next;
+    });
     await loadDashboard();
   }
 
@@ -277,7 +292,10 @@ export default function TeacherExamDashboard() {
         <ReviewRequestsPanel
           examId={examId}
           reviewOpen={dash.review_open}
-          onChange={handleReviewChange}
+          requests={reviews}
+          loadError={reviewsError}
+          onChange={loadDashboard}
+          onResolved={handleReviewResolved}
           onOpenStudent={openStudent}
         />
 
@@ -362,7 +380,7 @@ export default function TeacherExamDashboard() {
                           {s.pending_reviews > 0 && (
                             <span
                               className="ml-2 text-[11px] font-medium rounded-full border px-2 py-0.5 bg-amber-500/15 text-amber-300 border-amber-500/30"
-                              title="Solicitudes de revisión sin responder (ver sección Revisión)"
+                              title="Solicitudes de revisión sin responder: ábrelo para verlas debajo de cada ejercicio"
                             >
                               ✋ {s.pending_reviews} revisión{s.pending_reviews > 1 ? "es" : ""}
                             </span>
@@ -423,7 +441,11 @@ export default function TeacherExamDashboard() {
                             )}
                             {detail && !detail.error && (
                               <div className="space-y-3">
-                                {detail.problems.map((p) => (
+                                {detail.problems.map((p) => {
+                                  const review = reviews?.find(
+                                    (r) => r.student_id === s.student_id && r.problem_id === p.problem_id
+                                  );
+                                  return (
                                   <div
                                     key={p.problem_id}
                                     className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden"
@@ -503,8 +525,10 @@ export default function TeacherExamDashboard() {
                                     ) : (
                                       <p className="text-slate-500 text-xs px-4 py-3 italic">Sin entrega.</p>
                                     )}
+                                    {review && <InlineReview request={review} onResolved={handleReviewResolved} />}
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </td>

@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 
-const STATUS = {
+export const STATUS = {
   pending: { label: "Pendiente", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   accepted: { label: "Aceptada", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
   rejected: { label: "Rechazada", cls: "bg-rose-500/15 text-rose-300 border-rose-500/30" },
 };
 
-function formatDate(iso) {
+export function formatDate(iso) {
   const d = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
   return d.toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
 }
 
-function PendingForm({ request, onResolved }) {
+export function PendingForm({ request, onResolved }) {
   const [score, setScore] = useState(String(request.score));
   const [response, setResponse] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,23 +82,43 @@ function PendingForm({ request, onResolved }) {
   );
 }
 
-export default function ReviewRequestsPanel({ examId, reviewOpen, onChange, onOpenStudent }) {
-  const [requests, setRequests] = useState(null);
+// Solicitud de revisión de un problema, mostrada dentro del detalle del
+// estudiante (debajo de su código), con el mismo formulario del panel.
+export function InlineReview({ request, onResolved }) {
+  const st = STATUS[request.status] || STATUS.pending;
+  return (
+    <div className="border-t border-amber-500/20 bg-amber-500/[0.04] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-amber-200">✋ Solicitud de revisión</span>
+        <span className={`text-xs font-medium rounded-full border px-2 py-0.5 ${st.cls}`}>{st.label}</span>
+        <span className="ml-auto text-[11px] text-slate-600">Enviada {formatDate(request.created_at)}</span>
+      </div>
+      <p className="mt-2 text-sm text-slate-300 whitespace-pre-wrap">“{request.message}”</p>
+      {request.status === "pending" ? (
+        <PendingForm request={request} onResolved={onResolved} />
+      ) : (
+        <p className="mt-2 text-xs text-slate-400">
+          Tu respuesta: <span className="text-slate-200">“{request.response}”</span>
+          {request.resolved_at && <span className="text-slate-600"> · {formatDate(request.resolved_at)}</span>}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Las solicitudes las carga el dashboard (las comparte con el detalle de cada
+// estudiante); este panel solo las lista y abre/cierra la revisión.
+export default function ReviewRequestsPanel({ examId, reviewOpen, requests, loadError, onChange, onResolved, onOpenStudent }) {
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState("");
   const ref = useRef(null);
+  const loaded = requests != null;
 
   useEffect(() => {
-    api
-      .getReviewRequests(examId)
-      .then((data) => {
-        setRequests(data);
-        if (window.location.hash === "#revisiones") {
-          setTimeout(() => ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-        }
-      })
-      .catch(() => setError("No se pudieron cargar las solicitudes de revisión."));
-  }, [examId]);
+    if (loaded && window.location.hash === "#revisiones") {
+      setTimeout(() => ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    }
+  }, [loaded]);
 
   async function handleToggle() {
     if (
@@ -117,11 +137,6 @@ export default function ReviewRequestsPanel({ examId, reviewOpen, onChange, onOp
     } finally {
       setToggling(false);
     }
-  }
-
-  function handleResolved(updated) {
-    setRequests((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-    onChange(updated.student_id);
   }
 
   const pending = requests?.filter((r) => r.status === "pending").length || 0;
@@ -162,7 +177,7 @@ export default function ReviewRequestsPanel({ examId, reviewOpen, onChange, onOp
         </button>
       </div>
 
-      {error && <p className="text-rose-400 text-sm">{error}</p>}
+      {(error || loadError) && <p className="text-rose-400 text-sm">{error || loadError}</p>}
 
       {requests && requests.length === 0 && (
         <p className="text-slate-500 text-sm">Aún no hay solicitudes de revisión.</p>
@@ -192,7 +207,7 @@ export default function ReviewRequestsPanel({ examId, reviewOpen, onChange, onOp
                 <p className="mt-2 text-sm text-slate-300 whitespace-pre-wrap">“{r.message}”</p>
                 <p className="mt-1 text-[11px] text-slate-600">Enviada {formatDate(r.created_at)}</p>
                 {r.status === "pending" ? (
-                  <PendingForm request={r} onResolved={handleResolved} />
+                  <PendingForm request={r} onResolved={onResolved} />
                 ) : (
                   <p className="mt-2 text-xs text-slate-400">
                     Tu respuesta: <span className="text-slate-200">“{r.response}”</span>
